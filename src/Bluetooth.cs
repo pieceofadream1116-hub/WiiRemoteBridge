@@ -141,13 +141,22 @@ namespace WiiRemotePairer
 
         public static uint Remove(ulong address) => BluetoothRemoveDevice(ref address);
 
+        public enum PairResult { Paired, RemoteWentToSleep, Refused }
+
+        // "The remote stopped listening" errors: worth pressing the red button and trying again.
+        public static bool IsGone(uint err) => err == 87 || err == 121 || err == 1167 || err == 1168 || err == 1460;
+
         // Tries the three ways in turn. Reports each attempt through log().
-        public static bool Pair(Radio r, DeviceInfo dev, Action<string> log)
+        // refusedWays remembers ways the remote really said no to, so retries skip them.
+        public static PairResult Pair(Radio r, DeviceInfo dev, Action<string> log, HashSet<int> refusedWays = null)
         {
+            refusedWays = refusedWays ?? new HashSet<int>();
             if (dev.fRemembered && !dev.fConnected)
             {
                 log("Clearing an old pairing for this device first.");
                 Remove(dev.Address);
+                dev.fRemembered = false;
+                dev.fAuthenticated = false;
             }
 
             var attempts = new (string what, char[] pin)[]
@@ -157,8 +166,11 @@ namespace WiiRemotePairer
                 ("Way 3: no PIN", null),
             };
 
-            foreach (var (what, pin) in attempts)
+            bool wentToSleep = false;
+            for (int i = 0; i < attempts.Length; i++)
             {
+                if (refusedWays.Contains(i)) continue;
+                var (what, pin) = attempts[i];
                 log("Trying " + what + " ...");
                 var d = dev;
                 uint err = 0;
@@ -168,6 +180,8 @@ namespace WiiRemotePairer
                     if (err != 0)
                     {
                         log("  No luck (" + Explain(err) + ").");
+                        if (IsGone(err)) { wentToSleep = true; break; } // no point trying the next way now
+                        refusedWays.Add(i);
                         continue;
                     }
                 }
@@ -175,12 +189,15 @@ namespace WiiRemotePairer
                 if (err == 0)
                 {
                     log("  It worked!");
-                    return true;
+                    return PairResult.Paired;
                 }
                 log("  Paired, but the controller part didn't switch on (" + Explain(err) + ").");
-                if (pin != null) Remove(dev.Address);
+                Remove(dev.Address);
+                if (IsGone(err)) { wentToSleep = true; break; }
+                refusedWays.Add(i);
             }
-            return false;
+            if (wentToSleep && refusedWays.Count < attempts.Length) return PairResult.RemoteWentToSleep;
+            return PairResult.Refused;
         }
 
         public static string Explain(uint err)
@@ -190,6 +207,7 @@ namespace WiiRemotePairer
                 case 0: return "OK";
                 case 5: return "access denied - try running as administrator";
                 case 87: return "the remote didn't answer in time";
+                case 121: return "it timed out - press the red button again";
                 case 1167: return "the remote isn't listening - press its red button again";
                 case 1168: return "the remote has gone - press its red button again";
                 case 1223: return "it was cancelled";
@@ -213,5 +231,8 @@ namespace WiiRemotePairer
             uint c = d.ulClassofDevice & 0xFFFFFC;
             return c == 0x002504 || c == 0x000508 || c == 0x000504 || c == 0x002508;
         }
+
+        // Major class "Peripheral" (joysticks, gamepads, remotes; also mice and keyboards).
+        public static bool IsPeripheral(DeviceInfo d) => ((d.ulClassofDevice >> 8) & 0x1F) == 0x05;
     }
 }

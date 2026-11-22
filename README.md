@@ -5,7 +5,16 @@ third-party copies, so they can be used with WiimoteHook and Dolphin.
 
 Mouse only. No typing.
 
-## How to use
+## Easiest way: AUTO-PAIR
+
+1. Close WiimoteHook.
+2. Open **WiiRemotePairer.exe** and click **Yes** when Windows asks for permission.
+3. Click the orange **AUTO-PAIR** button.
+4. Press the red **sync** button in the remote's battery cover.
+5. The app pairs it by itself as soon as it sees it. If the remote goes to sleep,
+   big red text says **PRESS THE RED BUTTON AGAIN**, and it keeps trying for 30 seconds.
+
+## Doing it by hand
 
 1. Close WiimoteHook.
 2. Open **WiiRemotePairer.exe** and click **Yes** when Windows asks for permission.
