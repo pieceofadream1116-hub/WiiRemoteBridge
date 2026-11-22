@@ -27,10 +27,21 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -o out
 
+      - name: Build the bridge
+        run: >
+          dotnet publish bridge/WiiRemoteBridge.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o out
+
       - uses: actions/upload-artifact@v4
         with:
-          name: WiiRemotePairer
-          path: out/WiiRemotePairer.exe
+          name: WiiRemoteApps
+          path: |
+            out/WiiRemotePairer.exe
+            out/WiiRemoteBridge.exe
 
       - name: Put the app on the Releases page
         shell: bash
@@ -38,4 +49,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest out/WiiRemotePairer.exe --title "Wii Remote Pairer (latest build)" --notes "Download WiiRemotePairer.exe and double-click it. Click Yes when Windows asks for permission."
+          gh release create latest out/WiiRemotePairer.exe out/WiiRemoteBridge.exe --title "Wii Remote apps (latest build)" --notes "WiiRemoteBridge.exe sends a Wii Remote (through a Dolphin Bar on mode 4) to Dolphin on another device, like WiimoteHook. WiiRemotePairer.exe pairs remotes over Bluetooth."

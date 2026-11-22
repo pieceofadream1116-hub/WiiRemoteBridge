@@ -50,3 +50,19 @@ dotnet publish src/WiiRemotePairer.csproj -c Release -r win-x64 --self-contained
 ## License
 
 MIT
+
+# Wii Remote Bridge
+
+`WiiRemoteBridge.exe` is an open-source stand-in for WiimoteHook. It reads a Wii Remote
+through a **Mayflash Dolphin Bar on mode 4** (or a remote paired over Bluetooth) and serves it
+as a DSU / Cemuhook motion source on UDP port **26760**, so Dolphin on another device (like an
+Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
+
+- Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
+- Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,
+  - = Share, + = Options, Home = Triangle, Nunchuk C/Z = L3/R3, Nunchuk stick = left stick.
+- Tries four ways of sending to each Dolphin Bar slot and shows which one works, with the
+  Windows error for the ones that don't. Empty slots are skipped, never a crash.
+- Writes `WiiRemoteBridge-log.txt` next to the app.
+
+Close WiimoteHook first: both use port 26760.
