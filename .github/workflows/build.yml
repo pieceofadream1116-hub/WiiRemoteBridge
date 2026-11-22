@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build one-file app
+        run: >
+          dotnet publish src/WiiRemotePairer.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WiiRemotePairer
+          path: out/WiiRemotePairer.exe
+
+      - name: Put the app on the Releases page
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/WiiRemotePairer.exe --title "Wii Remote Pairer (latest build)" --notes "Download WiiRemotePairer.exe and double-click it. Click Yes when Windows asks for permission."
