@@ -10,6 +10,8 @@ namespace WiiRemoteBridge
         // Core buttons: low byte = report byte 1, high byte = report byte 2
         public ushort Buttons;
         public float Ax, Ay, Az;            // accelerometer in g, the remote's own axes
+        public bool HasAccel;
+        public byte ReportId;
         public bool HasGyro;
         public float Pitch, Roll, Yaw;       // MotionPlus, degrees per second (+ = the remote's own raw direction)
         public bool HasNunchuk;
@@ -58,6 +60,12 @@ namespace WiiRemoteBridge
         TaskCompletionSource<byte[]> pendingRead, pendingAck, pendingStatus;
         volatile bool setupDone;
         byte mode = 0x31;
+        CancellationToken runToken;
+        int wrongMode;
+        int resetting;
+        readonly int[] idCounts = new int[256];
+        DateTime lastIdLog = DateTime.Now;
+        string lastIdText = "";
 
         // Accelerometer calibration (10-bit values)
         int[] accZero = { 512, 512, 512 };
@@ -87,6 +95,7 @@ namespace WiiRemoteBridge
         public async Task RunAsync(CancellationToken ct)
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            runToken = linked.Token;
             var readTask = ReadLoop(linked.Token);
             try
             {
@@ -125,7 +134,43 @@ namespace WiiRemoteBridge
                 }
                 silentSeconds = 0;
                 LastReport = DateTime.Now;
+                idCounts[r[0]]++;
+                if ((DateTime.Now - lastIdLog).TotalSeconds >= 5) LogIds();
                 try { Handle(r); } catch (Exception ex) { log("Bad report: " + ex.Message); }
+            }
+        }
+
+        // Every 5 seconds: which kinds of report came in (only logged when it changes).
+        void LogIds()
+        {
+            var parts = new System.Collections.Generic.List<string>();
+            for (int i = 0; i < 256; i++)
+                if (idCounts[i] > 0) parts.Add("0x" + i.ToString("X2") + (i == 0x30 ? " (buttons only)" : i == 0x31 ? " (buttons+tilt)" : i == 0x35 ? " (buttons+tilt+extra)" : ""));
+            Array.Clear(idCounts, 0, 256);
+            lastIdLog = DateTime.Now;
+            string text = string.Join(", ", parts);
+            if (text == lastIdText) return;
+            lastIdText = text;
+            log("Remote is sending: " + (text.Length == 0 ? "nothing" : text) + ". Asked for 0x" + mode.ToString("X2") + ".");
+        }
+
+        // The remote was reset (battery out, re-synced, turned off and on): set it up from scratch.
+        async Task ResetupAsync()
+        {
+            if (Interlocked.Exchange(ref resetting, 1) == 1) return;
+            try
+            {
+                setupDone = false;
+                HasMotionPlus = false;
+                HasNunchuk = false;
+                await SetupAsync(runToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) { log("Setting the remote up again failed: " + ex.Message); }
+            finally
+            {
+                wrongMode = 0;
+                setupDone = true;
+                Interlocked.Exchange(ref resetting, 0);
             }
         }
 
@@ -148,7 +193,21 @@ namespace WiiRemoteBridge
                 case 0x21: pendingRead?.TrySetResult(r); break;
                 case 0x22: pendingAck?.TrySetResult(r); break;
                 default:
-                    if (id >= 0x30 && id <= 0x37) Data(r);
+                    if (id >= 0x30 && id <= 0x37)
+                    {
+                        if (setupDone && id != mode)
+                        {
+                            wrongMode++;
+                            if (wrongMode == 5) _ = SetMode(mode); // first, just ask again
+                            if (wrongMode == 40)
+                            {
+                                log("The remote is sending 0x" + id.ToString("X2") + " instead of 0x" + mode.ToString("X2") + ". It was probably reset. Setting it up again.");
+                                _ = ResetupAsync();
+                            }
+                        }
+                        else if (id == mode) wrongMode = 0;
+                        Data(r);
+                    }
                     break;
             }
         }
@@ -212,7 +271,13 @@ namespace WiiRemoteBridge
 
         Task<string> Send(params byte[] report) => dev.WriteAsync(report);
 
-        Task<string> SetMode(byte m) => Send(0x12, 0x04, m); // continuous reporting
+        // Continuous reporting in mode m.
+        async Task<string> SetMode(byte m)
+        {
+            string err = await Send(0x12, 0x04, m).ConfigureAwait(false);
+            if (err != null) log("Asking for report 0x" + m.ToString("X2") + " failed: " + err);
+            return err;
+        }
 
         async Task<byte[]> RequestStatus()
         {
@@ -263,6 +328,8 @@ namespace WiiRemoteBridge
             };
 
             bool hasAccel = id == 0x31 || id == 0x33 || id == 0x35 || id == 0x37;
+            s.HasAccel = hasAccel;
+            s.ReportId = id;
             if (hasAccel)
             {
                 int ax = (r[3] << 2) | ((r[1] >> 5) & 3);

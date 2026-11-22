@@ -329,7 +329,9 @@ namespace WiiRemoteBridge
                 remoteLine.Text = remoteLine.Text.Split('+')[0].TrimEnd() + extras;
                 buttonsLine.Text = "Buttons:  " + s.ButtonText();
                 buttonsLine.ForeColor = s.Buttons != 0 || s.C || s.Z ? Good : Ink;
-                motionLine.Text = string.Format("Motion:  tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
+                motionLine.Text = (s.HasAccel
+                        ? string.Format("Motion:  tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
+                        : "Motion:  no tilt data yet (remote sends 0x" + s.ReportId.ToString("X2") + "), fixing...")
                     + (s.HasGyro ? string.Format("    turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw) : "");
                 if (clients.Count > 0) SetStatus("WORKING! The remote is going to the Xbox.", Good);
                 else if (status.ForeColor != Good) SetStatus("Remote connected! Waiting for the Xbox...", Good);
