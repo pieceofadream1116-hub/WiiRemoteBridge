@@ -62,6 +62,8 @@ namespace WiiRemoteBridge
         byte mode = 0x31;
         CancellationToken runToken;
         int wrongMode;
+        volatile bool gotModeReport;
+        DateTime lastModeReport = DateTime.MinValue, lastOtherReport = DateTime.MinValue;
         int resetting;
         readonly int[] idCounts = new int[256];
         DateTime lastIdLog = DateTime.Now;
@@ -135,7 +137,15 @@ namespace WiiRemoteBridge
                 silentSeconds = 0;
                 LastReport = DateTime.Now;
                 idCounts[r[0]]++;
-                if ((DateTime.Now - lastIdLog).TotalSeconds >= 5) LogIds();
+                if ((DateTime.Now - lastIdLog).TotalSeconds >= 5)
+                {
+                    LogIds();
+                    if (setupDone && resetting == 0 && (DateTime.Now - lastModeReport).TotalSeconds > 3 && (DateTime.Now - lastOtherReport).TotalSeconds < 5)
+                    {
+                        log("The remote isn't sending tilt data. It was probably reset. Setting it up again.");
+                        _ = ResetupAsync();
+                    }
+                }
                 try { Handle(r); } catch (Exception ex) { log("Bad report: " + ex.Message); }
             }
         }
@@ -195,17 +205,8 @@ namespace WiiRemoteBridge
                 default:
                     if (id >= 0x30 && id <= 0x37)
                     {
-                        if (setupDone && id != mode)
-                        {
-                            wrongMode++;
-                            if (wrongMode == 5) _ = SetMode(mode); // first, just ask again
-                            if (wrongMode == 40)
-                            {
-                                log("The remote is sending 0x" + id.ToString("X2") + " instead of 0x" + mode.ToString("X2") + ". It was probably reset. Setting it up again.");
-                                _ = ResetupAsync();
-                            }
-                        }
-                        else if (id == mode) wrongMode = 0;
+                        if (id == mode) { gotModeReport = true; lastModeReport = DateTime.Now; }
+                        else lastOtherReport = DateTime.Now;
                         Data(r);
                     }
                     break;
@@ -215,6 +216,49 @@ namespace WiiRemoteBridge
         // ---------- setup ----------
 
         async Task SetupAsync(CancellationToken ct)
+        {
+            await FindWorkingMethod().ConfigureAwait(false);
+            for (int attempt = 0; attempt < HidDevice.MethodNames.Length; attempt++)
+            {
+                HasMotionPlus = false;
+                HasNunchuk = false;
+                await SetupCore(ct).ConfigureAwait(false);
+
+                // Did the remote really switch? Continuous reporting sends ~100 reports a second.
+                gotModeReport = false;
+                await Task.Delay(1500, ct).ConfigureAwait(false);
+                if (gotModeReport)
+                {
+                    log("Tilt data is coming in, using " + HidDevice.MethodNames[dev.Method] + ".");
+                    lastModeReport = DateTime.Now;
+                    return;
+                }
+                int next = (dev.Method + 1) % HidDevice.MethodNames.Length;
+                log("No tilt data using " + HidDevice.MethodNames[dev.Method] + ". Trying " + HidDevice.MethodNames[next] + ".");
+                dev.Method = next;
+            }
+            log("The remote ignored every way of sending. Buttons will work, motion won't.");
+        }
+
+        // Asks for a status reply with each way of sending until one gets an answer.
+        async Task FindWorkingMethod()
+        {
+            int start = dev.Method < 0 ? 0 : dev.Method;
+            for (int i = 0; i < HidDevice.MethodNames.Length; i++)
+            {
+                dev.Method = (start + i) % HidDevice.MethodNames.Length;
+                var status = await RequestStatus().ConfigureAwait(false);
+                if (status != null)
+                {
+                    log("The remote replies to " + HidDevice.MethodNames[dev.Method] + ".");
+                    return;
+                }
+                log("No reply to " + HidDevice.MethodNames[dev.Method] + ".");
+            }
+            dev.Method = start;
+        }
+
+        async Task SetupCore(CancellationToken ct)
         {
             await Send(0x11, 0x10).ConfigureAwait(false); // first light on, no rumble
 
@@ -266,7 +310,7 @@ namespace WiiRemoteBridge
             mode = (byte)(HasMotionPlus || HasNunchuk ? 0x35 : 0x31);
             await SetMode(mode).ConfigureAwait(false);
             if (HasMotionPlus) Calibrate();
-            log("Remote is set up and streaming.");
+            log("Asked the remote for report 0x" + mode.ToString("X2") + ".");
         }
 
         Task<string> Send(params byte[] report) => dev.WriteAsync(report);
@@ -393,9 +437,12 @@ namespace WiiRemoteBridge
         // ---------- finding which device has a live remote ----------
 
         // Asks one device for its status using each way of sending in turn.
-        // Returns the way that worked, or -1 (with the reasons in 'why').
+        // Only a real status reply (0x20) counts: button reports just mean the remote is on,
+        // not that our messages reach it. Returns the way that worked, or -1.
+        // If the remote sends buttons but never replies, returns 1 and the setup tries every way.
         public static async Task<int> ProbeAsync(HidDevice d, System.Text.StringBuilder why)
         {
+            bool sawData = false;
             for (int m = 0; m < HidDevice.MethodNames.Length; m++)
             {
                 string err = await d.WriteAsync(new byte[] { 0x15, 0x00 }, m).ConfigureAwait(false);
@@ -404,7 +451,6 @@ namespace WiiRemoteBridge
                     why.Append("   ").Append(HidDevice.MethodNames[m]).Append(": ").AppendLine(err);
                     continue;
                 }
-                // Wait up to a second for an answer (a status report, or any data if it's already streaming).
                 var until = DateTime.Now.AddMilliseconds(1000);
                 while (DateTime.Now < until)
                 {
@@ -412,9 +458,15 @@ namespace WiiRemoteBridge
                     try { r = await d.ReadAsync(400).ConfigureAwait(false); }
                     catch (Exception ex) { why.Append("   reading: ").AppendLine(ex.Message); return -1; }
                     if (r == null) continue;
-                    if (r[0] == 0x20 || (r[0] >= 0x30 && r[0] <= 0x37) || r[0] == 0x22) return m;
+                    if (r[0] == 0x20) return m;
+                    if (r[0] >= 0x30 && r[0] <= 0x3F) sawData = true;
                 }
-                why.Append("   ").Append(HidDevice.MethodNames[m]).AppendLine(": sent, but no answer");
+                why.Append("   ").Append(HidDevice.MethodNames[m]).AppendLine(": sent, but no status reply");
+            }
+            if (sawData)
+            {
+                why.AppendLine("   The remote is on (button data arrives) but never replied. Will try every way during setup.");
+                return 1;
             }
             return -1;
         }
