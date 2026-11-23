@@ -61,13 +61,14 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
 - Up to 4 remotes at once: each remote synced to the bar becomes its own player
   (first = DSU pad 0 = player 1, second = pad 1 = player 2, ...), with its player light lit.
 - Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
-- Remotes without MotionPlus point by **wrist twist**: twisting (roll) moves Dolphin's IMU pointer
-  left/right and tilting moves it up/down. The bridge sends turning (gyro) data that walks
-  Dolphin's pointer to the aimed spot, mirroring Dolphin's yaw limit (Total Yaw 25) and gyro dead
-  zone so the two stay in step. "Flip left/right" / "Flip up/down" buttons, remembered in
-  `WiiRemoteBridge-settings.txt`. Hold **minus** for about half a second to re-centre (a quick tap
-  still presses minus). "Twist aiming" can be switched off. A small test screen shows each
-  player's pointer.
+- Remotes without MotionPlus aim by **wrist twist** (left/right) and **tilt** (up/down). The aim is
+  sent as an absolute position on the DSU right stick, which the Dolphin "WiimoteHook" profile maps
+  to the IR (Point) group, so it can't drift. The tilt sensor Dolphin gets keeps the real sideways
+  twist and quick swings, without the up/down tilt (the stick does that). Adaptive smoothing plus a
+  small hold-still zone keep it steady. Hold **minus** ~0.6 s (or click "Set centre") to make the
+  current aim the middle; a quick tap still presses minus. "Flip left/right" / "Flip up/down" and
+  "Twist aiming" on/off are remembered in `WiiRemoteBridge-settings.txt`. A small test screen shows
+  each player's pointer.
 - Each player's data only goes to the Dolphin connection that asked for that player (Dolphin
   opens one per controller), so two remotes never get mixed together.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,

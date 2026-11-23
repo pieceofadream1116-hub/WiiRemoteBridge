@@ -98,7 +98,7 @@ namespace WiiRemoteBridge
             flipXBtn.Click += (s, e) => { Settings.FlipLeftRight = !Settings.FlipLeftRight; Settings.Save(); FlipText(); Log("Left/right " + (Settings.FlipLeftRight ? "flipped." : "back to normal.")); };
             flipYBtn.Click += (s, e) => { Settings.FlipUpDown = !Settings.FlipUpDown; Settings.Save(); FlipText(); Log("Up/down " + (Settings.FlipUpDown ? "flipped." : "back to normal.")); };
             Style(twistBtn, "", Color.FromArgb(90, 70, 150), 300);
-            Style(recenterBtn, "Re-centre pointers", Color.FromArgb(32, 96, 200), 320);
+            Style(recenterBtn, "Set centre", Color.FromArgb(32, 96, 200), 320);
             twistBtn.Click += (s, e) => { Settings.TwistAiming = !Settings.TwistAiming; Settings.Save(); FlipText(); Log("Twist aiming " + (Settings.TwistAiming ? "on." : "off: tilt only, like before.")); };
             recenterBtn.Click += (s, e) => { foreach (var seat in seats) seat.Remote?.Recenter(); };
             FlipText();
@@ -382,7 +382,7 @@ namespace WiiRemoteBridge
                 string motion = s.HasAccel
                     ? string.Format("tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
                     : "no tilt data yet (0x" + s.ReportId.ToString("X2") + "), fixing...";
-                if (s.TwistMode) motion += s.Recentering ? "   pointer: RE-CENTRING" : "   pointer: twist to aim, hold minus to re-centre";
+                if (s.TwistMode) motion += s.Recentering ? "   pointer: CENTRE SET" : "   pointer: twist + tilt to aim, hold minus to set centre";
                 else if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
                 l.Text = name + "slot " + w.Device.Slot + extras + Environment.NewLine +
                          "      Buttons: " + s.ButtonText() + "      " + motion;

@@ -216,8 +216,9 @@ namespace WiiRemoteBridge
             p[39] = 0; // touch
             p[40] = s.HasNunchuk ? s.StickX : (byte)128;
             p[41] = s.HasNunchuk ? s.StickY : (byte)128;
-            p[42] = 128;
-            p[43] = 128;
+            // Right stick: the absolute pointer position in twist aiming (centred otherwise).
+            p[42] = s.TwistMode ? (byte)Math.Clamp(128 + (int)Math.Round(s.PointerX * 127), 1, 255) : (byte)128;
+            p[43] = s.TwistMode ? (byte)Math.Clamp(128 + (int)Math.Round(s.PointerY * 127), 1, 255) : (byte)128;
             p[44] = Full(b1, 0x80); p[45] = Full(b1, 0x40); p[46] = Full(b1, 0x20); p[47] = Full(b1, 0x10);
             p[48] = Full(b2, 0x80); p[49] = Full(b2, 0x40); p[50] = Full(b2, 0x20); p[51] = Full(b2, 0x10);
             p[52] = Full(b2, 0x08); p[53] = Full(b2, 0x04); p[54] = 0; p[55] = 0;

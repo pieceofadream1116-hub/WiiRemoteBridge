@@ -83,32 +83,29 @@ namespace WiiRemoteBridge
         volatile bool calibrating;
         const int CalSamples = 150; // about 1.5 seconds
 
-        // Twist pointing (remotes without MotionPlus): Dolphin only moves the pointer left/right
-        // from turning (gyro) data, so we turn the wrist's twist and tilt into smooth turning data
-        // that walks Dolphin's pointer to where the remote is aimed.
-        const float YawLimit = 12.5f;     // half of Dolphin's default "Total Yaw" (25 degrees); Dolphin clamps here too
-        const float TwistRange = 45f;     // twisting this far reaches the edge of the screen
-        const float TiltRange = 30f;      // for the test screen only
-        const float Follow = 10f;         // how quickly the pointer catches up (per second)
-        const float Smooth = 0.12f;       // lower = steadier, slower
-        const float HoldStill = 1.5f;     // degrees the wrist must move before the pointer follows
-        const int RecenterHoldMs = 600;   // hold minus this long to re-centre
-        const float MaxRate = 400f;       // degrees per second
-        const float DolphinDeadZone = 3.5f; // Dolphin ignores slower turning than this (profile dead zone 3)
-        float twistSmooth, tiltSmooth, twistHeld, tiltHeld, virtualYaw, virtualPitch;
-        long lastTwistUs;
+        // Twist aiming (remotes without MotionPlus): the pointer position comes straight from how
+        // the wrist is twisted (left/right) and tilted (up/down), sent as an absolute right-stick
+        // position that the Dolphin profile uses for pointing. Nothing is added up over time,
+        // so it can't drift, and the flips apply in the game.
+        const float TwistRange = 40f;     // twisting this far reaches the side edge of the screen
+        const float TiltRange = 25f;      // tilting this far reaches the top/bottom edge
+        const float HoldStill = 0.8f;     // degrees the wrist must move before the pointer follows
+        const float SwingThreshold = 0.35f; // g: quicker movement than this still reaches the game
+        const int RecenterHoldMs = 600;   // hold minus this long to make the current aim the centre
+        float twistSmooth, tiltSmooth, twistHeld, tiltHeld, twistZero, tiltZero;
+        float gx, gy, gz = 1;             // slow-moving gravity estimate
         bool twistStarted;
         volatile bool recenterRequested;
-        int recenterPhase;        // >0 while pushing the pointer to the left edge to line up with Dolphin
+        long recenterShowUntilUs;
         long minusDownUs = -1;    // when minus went down (twist mode), or -1
         bool minusFired;
         long minusPulseUntilUs;
 
-        // Push Dolphin's pointer to its left limit (where it stops) and back, so both copies line up.
+        // Makes the way the remote is held right now the middle of the screen.
         public void Recenter()
         {
             recenterRequested = true;
-            log("Re-centring the pointer.");
+            log("Centre set: the pointer's middle is wherever the remote is aimed now.");
         }
 
         const float SlowUnitsPerDeg = 4352f / 270f;   // same numbers Dolphin uses
@@ -479,53 +476,49 @@ namespace WiiRemoteBridge
             if (!twistStarted)
             {
                 twistSmooth = twistHeld = twist; tiltSmooth = tiltHeld = tilt;
-                virtualYaw = 0; virtualPitch = tilt;
-                lastTwistUs = s.TimestampUs;
+                gx = s.Ax; gy = s.Ay; gz = s.Az;
                 twistStarted = true;
-                recenterRequested = true; // line up with Dolphin straight away
             }
-            float dt = Math.Clamp((s.TimestampUs - lastTwistUs) / 1_000_000f, 0.001f, 0.05f);
-            lastTwistUs = s.TimestampUs;
 
-            // Smooth out the shake from the sensor, then ignore tiny wobbles.
-            twistSmooth += (twist - twistSmooth) * Smooth;
-            tiltSmooth += (tilt - tiltSmooth) * Smooth;
+            // Smoothing that adapts: tiny wobbles are smoothed heavily (steady), real moves follow fast.
+            twistSmooth += (twist - twistSmooth) * Adapt(twist - twistSmooth);
+            tiltSmooth += (tilt - tiltSmooth) * Adapt(tilt - tiltSmooth);
             if (Math.Abs(twistSmooth - twistHeld) > HoldStill) twistHeld += Math.Sign(twistSmooth - twistHeld) * (Math.Abs(twistSmooth - twistHeld) - HoldStill);
             if (Math.Abs(tiltSmooth - tiltHeld) > HoldStill) tiltHeld += Math.Sign(tiltSmooth - tiltHeld) * (Math.Abs(tiltSmooth - tiltHeld) - HoldStill);
 
-            float targetYaw = Math.Clamp(twistHeld / TwistRange * YawLimit, -YawLimit, YawLimit) * (Settings.FlipLeftRight ? -1 : 1);
-            float targetPitch = tiltHeld * (Settings.FlipUpDown ? -1 : 1);
-
-            if (recenterRequested) { recenterRequested = false; recenterPhase = 1; }
-            if (recenterPhase > 0)
+            if (recenterRequested)
             {
-                // Aim past the left limit: Dolphin stops at the limit, and so does our copy.
-                targetYaw = -YawLimit - 20;
-                if (virtualYaw <= -YawLimit + 0.01f && ++recenterPhase > 5) recenterPhase = 0;
+                recenterRequested = false;
+                twistZero = twistHeld;
+                tiltZero = tiltHeld;
+                recenterShowUntilUs = s.TimestampUs + 700_000;
             }
 
-            float yawRate = Step(ref virtualYaw, targetYaw, dt, true);
-            float pitchRate = Step(ref virtualPitch, targetPitch, dt, false);
+            float x = Math.Clamp((twistHeld - twistZero) / TwistRange, -1, 1) * (Settings.FlipLeftRight ? -1 : 1);
+            float y = Math.Clamp((tiltHeld - tiltZero) / TiltRange, -1, 1) * (Settings.FlipUpDown ? -1 : 1);
 
-            s.HasGyro = true;
+            // What Dolphin gets as the tilt sensor: the real sideways twist, no up/down tilt (the stick
+            // does that), plus any quick swing or shake so games still feel those.
+            gx += (s.Ax - gx) * 0.08f; gy += (s.Ay - gy) * 0.08f; gz += (s.Az - gz) * 0.08f;
+            float dx = s.Ax - gx, dy = s.Ay - gy, dz = s.Az - gz;
+            bool swinging = Math.Sqrt(dx * dx + dy * dy + dz * dz) > SwingThreshold;
+            double roll = Math.Atan2(gx, gz);
+            s.Ax = (float)Math.Sin(roll) + (swinging ? dx : 0);
+            s.Ay = swinging ? dy : 0;
+            s.Az = (float)Math.Cos(roll) + (swinging ? dz : 0);
+
+            s.HasGyro = false;  // no turning data: the stick does the aiming
+            s.Pitch = s.Roll = s.Yaw = 0;
             s.TwistMode = true;
-            s.Recentering = recenterPhase > 0;
-            s.Yaw = yawRate;
-            s.Pitch = pitchRate;
-            s.Roll = 0;
-            s.PointerX = Math.Clamp(virtualYaw / YawLimit * (Settings.FlipLeftRight ? -1 : 1), -1, 1);
-            s.PointerY = Math.Clamp(virtualPitch / TiltRange * (Settings.FlipUpDown ? -1 : 1), -1, 1);
+            s.Recentering = s.TimestampUs < recenterShowUntilUs;
+            s.PointerX = x;
+            s.PointerY = y;
         }
 
-        // Turning speed that moves our copy of Dolphin's pointer towards the target, done the
-        // same way Dolphin does it (dead zone, yaw limit) so the two stay together.
-        static float Step(ref float current, float target, float dt, bool clampYaw)
+        static float Adapt(float delta)
         {
-            float rate = Math.Clamp((target - current) * Follow, -MaxRate, MaxRate);
-            if (Math.Abs(rate) < DolphinDeadZone) return 0;
-            current += rate * dt;
-            if (clampYaw) current = Math.Clamp(current, -YawLimit, YawLimit);
-            return rate;
+            float d = Math.Abs(delta);
+            return Math.Clamp(0.05f + d * 0.03f, 0.05f, 0.6f);
         }
 
         void MotionPlusData(byte[] r, int at, WiiState s)

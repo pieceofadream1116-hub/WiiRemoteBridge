@@ -21,8 +21,8 @@ namespace WiiRemoteBridge
                     var parts = line.Split('=');
                     if (parts.Length != 2) continue;
                     bool on = parts[1].Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
-                    if (parts[0].Trim() == "FlipLeftRight") FlipLeftRight = on;
-                    if (parts[0].Trim() == "FlipUpDown") FlipUpDown = on;
+                    if (parts[0].Trim() == "AimFlipLeftRight") FlipLeftRight = on;
+                    if (parts[0].Trim() == "AimFlipUpDown") FlipUpDown = on;
                     if (parts[0].Trim() == "TwistAiming") TwistAiming = on;
                 }
             }
@@ -31,7 +31,7 @@ namespace WiiRemoteBridge
 
         public static void Save()
         {
-            try { File.WriteAllText(FilePath, "FlipLeftRight=" + FlipLeftRight + Environment.NewLine + "FlipUpDown=" + FlipUpDown + Environment.NewLine + "TwistAiming=" + TwistAiming + Environment.NewLine); }
+            try { File.WriteAllText(FilePath, "AimFlipLeftRight=" + FlipLeftRight + Environment.NewLine + "AimFlipUpDown=" + FlipUpDown + Environment.NewLine + "TwistAiming=" + TwistAiming + Environment.NewLine); }
             catch { }
         }
     }
