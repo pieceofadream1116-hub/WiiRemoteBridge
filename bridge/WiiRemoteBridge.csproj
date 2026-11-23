@@ -8,6 +8,6 @@
     <AssemblyName>WiiRemoteBridge</AssemblyName>
     <RootNamespace>WiiRemoteBridge</RootNamespace>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
   </PropertyGroup>
 </Project>

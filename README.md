@@ -61,6 +61,11 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
 - Up to 4 remotes at once: each remote synced to the bar becomes its own player
   (first = DSU pad 0 = player 1, second = pad 1 = player 2, ...), with its player light lit.
 - Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
+- Remotes without MotionPlus point by **wrist twist**: twisting (roll) moves Dolphin's IMU pointer
+  left/right and tilting moves it up/down. The bridge sends turning (gyro) data that walks
+  Dolphin's pointer to the aimed spot, mirroring Dolphin's yaw limit (Total Yaw 25) and gyro dead
+  zone so the two stay in step. "Flip left/right" / "Flip up/down" buttons, remembered in
+  `WiiRemoteBridge-settings.txt`.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,
   - = Share, + = Options, Home = Triangle, Nunchuk C/Z = L3/R3, Nunchuk stick = left stick.
 - Tries four ways of sending to each Dolphin Bar slot and shows which one works, with the

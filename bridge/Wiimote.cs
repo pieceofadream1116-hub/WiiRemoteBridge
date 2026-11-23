@@ -13,6 +13,7 @@ namespace WiiRemoteBridge
         public bool HasAccel;
         public byte ReportId;
         public bool HasGyro;
+        public bool TwistMode;              // pointer made from wrist twist (no MotionPlus)
         public float Pitch, Roll, Yaw;       // MotionPlus, degrees per second (+ = the remote's own raw direction)
         public bool HasNunchuk;
         public byte StickX = 128, StickY = 128;
@@ -79,6 +80,18 @@ namespace WiiRemoteBridge
         int calCount;
         volatile bool calibrating;
         const int CalSamples = 150; // about 1.5 seconds
+
+        // Twist pointing (remotes without MotionPlus): Dolphin only moves the pointer left/right
+        // from turning (gyro) data, so we turn the wrist's twist and tilt into smooth turning data
+        // that walks Dolphin's pointer to where the remote is aimed.
+        const float YawLimit = 12.5f;     // half of Dolphin's default "Total Yaw" (25 degrees); Dolphin clamps here too
+        const float TwistRange = 35f;     // twisting this far reaches the edge of the screen
+        const float Follow = 15f;         // how quickly the pointer catches up (per second)
+        const float MaxRate = 400f;       // degrees per second
+        const float DolphinDeadZone = 3.5f; // Dolphin ignores slower turning than this (profile dead zone 3)
+        float twistSmooth, tiltSmooth, virtualYaw, virtualPitch;
+        long lastTwistUs;
+        bool twistStarted;
 
         const float SlowUnitsPerDeg = 4352f / 270f;   // same numbers Dolphin uses
         const float FastUnitsPerDeg = 4352f / 1200f;
@@ -394,6 +407,8 @@ namespace WiiRemoteBridge
             }
             else s.Az = 1;
 
+            if (hasAccel && !HasMotionPlus) TwistPointer(s);
+
             int extAt = id == 0x32 || id == 0x34 ? 3 : id == 0x35 ? 6 : id == 0x36 ? 13 : id == 0x37 ? 16 : -1;
             if (extAt > 0 && r.Length >= extAt + 6)
             {
@@ -410,6 +425,48 @@ namespace WiiRemoteBridge
 
             Reports++;
             StateChanged?.Invoke(s);
+        }
+
+        void TwistPointer(WiiState s)
+        {
+            float twist = (float)(Math.Atan2(s.Ax, s.Az) * 180 / Math.PI);                                   // roll
+            float tilt = (float)(Math.Atan2(s.Ay, Math.Sqrt(s.Ax * s.Ax + s.Az * s.Az)) * 180 / Math.PI);   // pitch
+            if (!twistStarted)
+            {
+                twistSmooth = twist; tiltSmooth = tilt;
+                virtualYaw = 0; virtualPitch = tilt;
+                lastTwistUs = s.TimestampUs;
+                twistStarted = true;
+            }
+            float dt = Math.Clamp((s.TimestampUs - lastTwistUs) / 1_000_000f, 0.001f, 0.05f);
+            lastTwistUs = s.TimestampUs;
+
+            // Smooth out the shake from the sensor.
+            twistSmooth += (twist - twistSmooth) * 0.25f;
+            tiltSmooth += (tilt - tiltSmooth) * 0.25f;
+
+            float targetYaw = Math.Clamp(twistSmooth / TwistRange * YawLimit, -YawLimit, YawLimit) * (Settings.FlipLeftRight ? -1 : 1);
+            float targetPitch = tiltSmooth * (Settings.FlipUpDown ? -1 : 1);
+
+            float yawRate = Step(ref virtualYaw, targetYaw, dt, true);
+            float pitchRate = Step(ref virtualPitch, targetPitch, dt, false);
+
+            s.HasGyro = true;
+            s.TwistMode = true;
+            s.Yaw = yawRate;
+            s.Pitch = pitchRate;
+            s.Roll = 0;
+        }
+
+        // Turning speed that moves our copy of Dolphin's pointer towards the target, done the
+        // same way Dolphin does it (dead zone, yaw limit) so the two stay together.
+        static float Step(ref float current, float target, float dt, bool clampYaw)
+        {
+            float rate = Math.Clamp((target - current) * Follow, -MaxRate, MaxRate);
+            if (Math.Abs(rate) < DolphinDeadZone) return 0;
+            current += rate * dt;
+            if (clampYaw) current = Math.Clamp(current, -YawLimit, YawLimit);
+            return rate;
         }
 
         void MotionPlusData(byte[] r, int at, WiiState s)

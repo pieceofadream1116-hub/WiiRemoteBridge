@@ -23,6 +23,8 @@ namespace WiiRemoteBridge
         readonly Button startBtn = new Button();
         readonly Button calibrateBtn = new Button();
         readonly Button reconnectBtn = new Button();
+        readonly Button flipXBtn = new Button();
+        readonly Button flipYBtn = new Button();
         readonly TextBox logBox = new TextBox();
 
         static readonly Font Big = new Font("Segoe UI", 16f);
@@ -87,9 +89,17 @@ namespace WiiRemoteBridge
                 Log("Reconnecting all remotes...");
                 foreach (var seat in seats) seat.Cts?.Cancel();
             };
+            Settings.Load();
+            Style(flipXBtn, "", Color.FromArgb(90, 70, 150), 300);
+            Style(flipYBtn, "", Color.FromArgb(90, 70, 150), 300);
+            flipXBtn.Click += (s, e) => { Settings.FlipLeftRight = !Settings.FlipLeftRight; Settings.Save(); FlipText(); Log("Left/right " + (Settings.FlipLeftRight ? "flipped." : "back to normal.")); };
+            flipYBtn.Click += (s, e) => { Settings.FlipUpDown = !Settings.FlipUpDown; Settings.Save(); FlipText(); Log("Up/down " + (Settings.FlipUpDown ? "flipped." : "back to normal.")); };
+            FlipText();
             buttons.Controls.Add(startBtn);
             buttons.Controls.Add(calibrateBtn);
             buttons.Controls.Add(reconnectBtn);
+            buttons.Controls.Add(flipXBtn);
+            buttons.Controls.Add(flipYBtn);
             layout.Controls.Add(buttons);
 
             foreach (var l in new[] { barLine, xboxLine })
@@ -142,6 +152,12 @@ namespace WiiRemoteBridge
             b.FlatAppearance.BorderSize = 0;
             b.Margin = new Padding(0, 0, 14, 8);
             b.Cursor = Cursors.Hand;
+        }
+
+        void FlipText()
+        {
+            flipXBtn.Text = Settings.FlipLeftRight ? "Left/right: FLIPPED" : "Flip left/right";
+            flipYBtn.Text = Settings.FlipUpDown ? "Up/down: FLIPPED" : "Flip up/down";
         }
 
         static string LocalAddresses()
@@ -352,7 +368,8 @@ namespace WiiRemoteBridge
                 string motion = s.HasAccel
                     ? string.Format("tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
                     : "no tilt data yet (0x" + s.ReportId.ToString("X2") + "), fixing...";
-                if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
+                if (s.TwistMode) motion += "   pointer: twist your wrist to aim";
+                else if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
                 l.Text = name + "slot " + w.Device.Slot + extras + Environment.NewLine +
                          "      Buttons: " + s.ButtonText() + "      " + motion;
                 l.ForeColor = Good;
