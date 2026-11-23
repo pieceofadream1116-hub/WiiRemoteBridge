@@ -1,8 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
@@ -14,32 +14,40 @@ namespace WiiRemoteBridge
 {
     internal sealed class BridgeForm : Form
     {
+        const int MaxPlayers = 4;
+
         readonly Label status = new Label();
         readonly Label barLine = new Label();
-        readonly Label remoteLine = new Label();
         readonly Label xboxLine = new Label();
-        readonly Label buttonsLine = new Label();
-        readonly Label motionLine = new Label();
+        readonly Label[] playerLines = new Label[MaxPlayers];
         readonly Button startBtn = new Button();
         readonly Button calibrateBtn = new Button();
         readonly Button reconnectBtn = new Button();
         readonly TextBox logBox = new TextBox();
 
         static readonly Font Big = new Font("Segoe UI", 16f);
-        static readonly Font BigBold = new Font("Segoe UI", 17f, FontStyle.Bold);
+        static readonly Font BigBold = new Font("Segoe UI", 16f, FontStyle.Bold);
         static readonly Font Huge = new Font("Segoe UI", 28f, FontStyle.Bold);
         static readonly Color Ink = Color.FromArgb(30, 30, 30);
+        static readonly Color Dim = Color.FromArgb(120, 120, 120);
         static readonly Color Good = Color.FromArgb(20, 130, 60);
         static readonly Color Warn = Color.FromArgb(200, 90, 0);
         static readonly Color Bad = Color.FromArgb(190, 30, 30);
+
+        // One per player (index 0 = player 1 = Dolphin's first DSU pad).
+        sealed class Seat
+        {
+            public Wiimote Remote;
+            public volatile WiiState Latest;
+            public CancellationTokenSource Cts;
+        }
+        readonly Seat[] seats = new Seat[MaxPlayers];
+        readonly object seatGate = new object();
 
         readonly string logPath;
         readonly object logGate = new object();
         DsuServer server;
         CancellationTokenSource runCts;
-        CancellationTokenSource remoteCts;
-        volatile Wiimote current;
-        volatile WiiState latest;
         volatile bool closing;
         string lastProbeReport = "";
 
@@ -50,13 +58,15 @@ namespace WiiRemoteBridge
             WindowState = FormWindowState.Maximized;
             MinimumSize = new Size(900, 650);
             BackColor = Color.FromArgb(250, 250, 247);
+            for (int i = 0; i < MaxPlayers; i++) seats[i] = new Seat();
 
             logPath = Path.Combine(AppContext.BaseDirectory, "WiiRemoteBridge-log.txt");
             try { File.WriteAllText(logPath, "Wii Remote Bridge log, " + DateTime.Now + Environment.NewLine); }
             catch { logPath = Path.Combine(Path.GetTempPath(), "WiiRemoteBridge-log.txt"); }
 
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9, Padding = new Padding(16) };
-            for (int i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            int rows = 5 + MaxPlayers + 1;
+            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = rows, Padding = new Padding(16) };
+            for (int i = 0; i < rows - 1; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(layout);
 
@@ -69,16 +79,20 @@ namespace WiiRemoteBridge
             var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 10) };
             Style(startBtn, "START", Good, 260);
             Style(calibrateBtn, "Calibrate motion", Color.FromArgb(32, 96, 200), 300);
-            Style(reconnectBtn, "Reconnect remote", Warn, 300);
+            Style(reconnectBtn, "Reconnect remotes", Warn, 320);
             startBtn.Click += (s, e) => ToggleStart();
-            calibrateBtn.Click += (s, e) => current?.Calibrate();
-            reconnectBtn.Click += (s, e) => { Log("Reconnecting the remote..."); remoteCts?.Cancel(); };
+            calibrateBtn.Click += (s, e) => { foreach (var seat in seats) seat.Remote?.Calibrate(); };
+            reconnectBtn.Click += (s, e) =>
+            {
+                Log("Reconnecting all remotes...");
+                foreach (var seat in seats) seat.Cts?.Cancel();
+            };
             buttons.Controls.Add(startBtn);
             buttons.Controls.Add(calibrateBtn);
             buttons.Controls.Add(reconnectBtn);
             layout.Controls.Add(buttons);
 
-            foreach (var l in new[] { barLine, remoteLine, xboxLine, buttonsLine, motionLine })
+            foreach (var l in new[] { barLine, xboxLine })
             {
                 l.AutoSize = true;
                 l.Font = BigBold;
@@ -86,8 +100,13 @@ namespace WiiRemoteBridge
                 l.MaximumSize = new Size(1800, 0);
                 layout.Controls.Add(l);
             }
+            for (int i = 0; i < MaxPlayers; i++)
+            {
+                playerLines[i] = new Label { AutoSize = true, Font = BigBold, Margin = new Padding(0, 6, 0, 6), MaximumSize = new Size(1800, 0) };
+                layout.Controls.Add(playerLines[i]);
+            }
 
-            var pcIp = new Label { AutoSize = true, Font = Big, Margin = new Padding(0, 4, 0, 8), Text = "This PC's address for Dolphin:  " + LocalAddresses() + "   port " + DsuServer.DefaultPort };
+            var pcIp = new Label { AutoSize = true, Font = Big, Margin = new Padding(0, 6, 0, 8), Text = "This PC's address for Dolphin:  " + LocalAddresses() + "   port " + DsuServer.DefaultPort };
             layout.Controls.Add(pcIp);
 
             logBox.Dock = DockStyle.Fill;
@@ -100,11 +119,9 @@ namespace WiiRemoteBridge
 
             SetStatus("Click START.", Ink);
             barLine.Text = "Dolphin Bar:  -";
-            remoteLine.Text = "Remote:  -";
             xboxLine.Text = "Xbox:  -";
-            buttonsLine.Text = "Buttons:  -";
-            motionLine.Text = "Motion:  -";
             calibrateBtn.Enabled = reconnectBtn.Enabled = false;
+            RefreshLive();
 
             var timer = new System.Windows.Forms.Timer { Interval = 150 };
             timer.Tick += (s, e) => RefreshLive();
@@ -175,12 +192,6 @@ namespace WiiRemoteBridge
             l.ForeColor = c;
         }
 
-        void Ui(Action a)
-        {
-            if (closing) return;
-            try { BeginInvoke(a); } catch { }
-        }
-
         // ---------- start / stop ----------
 
         void ToggleStart()
@@ -198,7 +209,7 @@ namespace WiiRemoteBridge
                 return;
             }
 
-            server = new DsuServer(Log) { RemoteConnected = () => current != null && latest != null };
+            server = new DsuServer(Log) { RemoteConnected = pad => pad < MaxPlayers && seats[pad].Remote != null && seats[pad].Latest != null };
             if (!server.Start(DsuServer.DefaultPort, out string err))
             {
                 SetStatus("Can't start: " + err, Bad);
@@ -211,71 +222,47 @@ namespace WiiRemoteBridge
             runCts = new CancellationTokenSource();
             startBtn.Text = "STOP";
             startBtn.BackColor = Bad;
-            reconnectBtn.Enabled = true;
+            reconnectBtn.Enabled = calibrateBtn.Enabled = true;
             var token = runCts.Token;
-            _ = Task.Run(() => RemoteLoop(token));
+            _ = Task.Run(() => ScanLoop(token));
         }
 
-        async Task RemoteLoop(CancellationToken ct)
+        // Every few seconds: look at every Dolphin Bar slot that doesn't already have a player,
+        // and give any remote that answers the lowest free player number.
+        async Task ScanLoop(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
-                try
-                {
-                    var wiimote = await FindRemote(ct).ConfigureAwait(false);
-                    if (wiimote == null)
-                    {
-                        await Task.Delay(2000, ct).ConfigureAwait(false);
-                        continue;
-                    }
-                    var (w, dev) = wiimote.Value;
-                    current = w;
-                    w.StateChanged += s => { latest = s; server?.SendState(s); };
-                    SetStatus("Remote connected! Waiting for the Xbox...", Good);
-                    Ui(() => calibrateBtn.Enabled = true);
-
-                    remoteCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    await w.RunAsync(remoteCts.Token).ConfigureAwait(false);
-
-                    current = null;
-                    latest = null;
-                    dev.Dispose();
-                    Ui(() => calibrateBtn.Enabled = false);
-                    if (!ct.IsCancellationRequested)
-                    {
-                        SetStatus("Lost the remote. Press A on it to wake it up.", Bad);
-                        await Task.Delay(1500, ct).ConfigureAwait(false);
-                    }
-                }
+                try { await ScanOnce(ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
-                catch (Exception ex)
-                {
-                    Log("Problem: " + ex.Message);
-                    try { await Task.Delay(2000, ct).ConfigureAwait(false); } catch { return; }
-                }
+                catch (Exception ex) { Log("Problem: " + ex.Message); }
+                try { await Task.Delay(3000, ct).ConfigureAwait(false); } catch { return; }
             }
         }
 
-        async Task<(Wiimote, HidDevice)?> FindRemote(CancellationToken ct)
+        async Task ScanOnce(CancellationToken ct)
         {
             var devices = HidDevice.FindWiimotes();
             if (devices.Count == 0)
             {
                 SetLine(barLine, "Dolphin Bar:  not found. Is it plugged in and on mode 4?", Bad);
-                SetLine(remoteLine, "Remote:  -", Ink);
-                SetStatus("Plug in the Dolphin Bar and set it to mode 4.", Bad);
                 LogOnce("No Nintendo devices found (looking for 057E:0306 / 057E:0330).");
-                return null;
+                return;
             }
-
             SetLine(barLine, "Dolphin Bar:  found (" + devices.Count + (devices.Count == 1 ? " slot" : " slots") + ")", Good);
-            SetStatus("Looking for the remote... press A on it, or the bar's SYNC then the red button.", Warn);
+
+            HashSet<string> inUse;
+            lock (seatGate)
+                inUse = new HashSet<string>(seats.Where(x => x.Remote != null).Select(x => x.Remote.Device.Path), StringComparer.OrdinalIgnoreCase);
+            if (inUse.Count >= MaxPlayers) return;
 
             var report = new StringBuilder();
-            report.AppendLine("Checked " + devices.Count + " Nintendo device(s):");
+            int checkedCount = 0;
             foreach (var d in devices)
             {
-                if (ct.IsCancellationRequested) return null;
+                if (ct.IsCancellationRequested) return;
+                if (inUse.Contains(d.Path)) continue;
+                checkedCount++;
                 report.AppendLine(" Slot " + d.Slot + " (product " + d.Pid.ToString("X4") + ", in " + d.InLen + " / out " + d.OutLen + " bytes):");
                 if (!d.Open(out string openErr))
                 {
@@ -283,20 +270,49 @@ namespace WiiRemoteBridge
                     continue;
                 }
                 int method = await Wiimote.ProbeAsync(d, report).ConfigureAwait(false);
-                if (method >= 0)
+                if (method < 0) { d.Dispose(); continue; }
+
+                d.Method = method;
+                report.AppendLine("   ANSWERED using " + HidDevice.MethodNames[method]);
+                int player = TakeSeat(d, ct);
+                if (player < 0) { d.Dispose(); break; }
+                Log("Remote found in slot " + d.Slot + ": it's player " + (player + 1) + ".");
+            }
+            if (checkedCount > 0) LogOnce("Checked " + checkedCount + " free slot(s):" + Environment.NewLine + report.ToString().TrimEnd());
+        }
+
+        // Gives the remote the lowest free player number and starts it. Returns the player, or -1.
+        int TakeSeat(HidDevice d, CancellationToken ct)
+        {
+            Seat seat;
+            int player;
+            lock (seatGate)
+            {
+                player = Array.FindIndex(seats, x => x.Remote == null);
+                if (player < 0) return -1;
+                seat = seats[player];
+                seat.Remote = new Wiimote(d, player, Log);
+                seat.Latest = null;
+                seat.Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            }
+            var w = seat.Remote;
+            int pad = player;
+            w.StateChanged += s => { seat.Latest = s; server?.SendState(pad, s); };
+            var token = seat.Cts.Token;
+            _ = Task.Run(async () =>
+            {
+                try { await w.RunAsync(token).ConfigureAwait(false); }
+                catch (Exception ex) { Log("Player " + (pad + 1) + ": " + ex.Message); }
+                lock (seatGate)
                 {
-                    d.Method = method;
-                    report.AppendLine("   ANSWERED using " + HidDevice.MethodNames[method]);
-                    LogOnce(report.ToString().TrimEnd());
-                    Log("Remote found in slot " + d.Slot + ".");
-                    SetLine(remoteLine, "Remote:  connected (slot " + d.Slot + ")", Good);
-                    return (new Wiimote(d, Log), d);
+                    seat.Remote = null;
+                    seat.Latest = null;
                 }
                 d.Dispose();
-            }
-            LogOnce(report.ToString().TrimEnd());
-            SetLine(remoteLine, "Remote:  not answering. Press A on it (one light should stay on).", Bad);
-            return null;
+                if (!closing && !ct.IsCancellationRequested)
+                    Log("Player " + (pad + 1) + " disconnected. Press A on that remote to bring it back.");
+            });
+            return player;
         }
 
         // Only write a probe report to the log when it changes, so the log stays readable.
@@ -311,38 +327,50 @@ namespace WiiRemoteBridge
 
         void RefreshLive()
         {
-            if (server == null) return;
-            var clients = server.ActiveClients();
-            var w = current;
-            var s = latest;
+            int connected = 0;
+            for (int i = 0; i < MaxPlayers; i++)
+            {
+                var seat = seats[i];
+                var w = seat.Remote;
+                var s = seat.Latest;
+                var l = playerLines[i];
+                string name = "Player " + (i + 1) + ":  ";
+                if (w == null)
+                {
+                    l.Text = name + (i == 0 ? "no remote yet. Press A on it, or the bar's SYNC then the remote's red button." : "free. Sync another remote to the bar to add a player.");
+                    l.ForeColor = i == 0 ? Warn : Dim;
+                    continue;
+                }
+                if (s == null)
+                {
+                    l.Text = name + "setting up the remote in slot " + w.Device.Slot + "...";
+                    l.ForeColor = Warn;
+                    continue;
+                }
+                connected++;
+                string extras = (w.HasMotionPlus ? " + MotionPlus" : "") + (w.HasNunchuk ? " + Nunchuk" : "");
+                string motion = s.HasAccel
+                    ? string.Format("tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
+                    : "no tilt data yet (0x" + s.ReportId.ToString("X2") + "), fixing...";
+                if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
+                l.Text = name + "slot " + w.Device.Slot + extras + Environment.NewLine +
+                         "      Buttons: " + s.ButtonText() + "      " + motion;
+                l.ForeColor = Good;
+            }
 
-            if (clients.Count > 0)
-                xboxLine.Text = "Xbox:  connected (" + string.Join(", ", clients) + ")";
-            else
-                xboxLine.Text = "Xbox:  waiting. Start a Wii game in Dolphin on the Xbox.";
+            if (server == null) { xboxLine.Text = "Xbox:  -"; xboxLine.ForeColor = Ink; return; }
+            var clients = server.ActiveClients();
+            xboxLine.Text = clients.Count > 0
+                ? "Xbox:  connected (" + string.Join(", ", clients) + ")"
+                : "Xbox:  waiting. Start a Wii game in Dolphin on the Xbox.";
             xboxLine.ForeColor = clients.Count > 0 ? Good : Warn;
 
-            if (w != null && s != null)
-            {
-                string extras = w.HasMotionPlus ? "  + MotionPlus" : "";
-                extras += w.HasNunchuk ? "  + Nunchuk" : "";
-                remoteLine.Text = remoteLine.Text.Split('+')[0].TrimEnd() + extras;
-                buttonsLine.Text = "Buttons:  " + s.ButtonText();
-                buttonsLine.ForeColor = s.Buttons != 0 || s.C || s.Z ? Good : Ink;
-                motionLine.Text = (s.HasAccel
-                        ? string.Format("Motion:  tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
-                        : "Motion:  no tilt data yet (remote sends 0x" + s.ReportId.ToString("X2") + "), fixing...")
-                    + (s.HasGyro ? string.Format("    turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw) : "");
-                if (clients.Count > 0) SetStatus("WORKING! The remote is going to the Xbox.", Good);
-                else if (status.ForeColor != Good) SetStatus("Remote connected! Waiting for the Xbox...", Good);
-                else if (status.Text.StartsWith("WORKING")) SetStatus("Remote connected! Waiting for the Xbox...", Good);
-            }
+            if (connected == 0)
+                SetStatus("Looking for remotes... press A on one.", Warn);
+            else if (clients.Count > 0)
+                SetStatus("WORKING! " + connected + (connected == 1 ? " remote is" : " remotes are") + " going to the Xbox.", Good);
             else
-            {
-                buttonsLine.Text = "Buttons:  -";
-                buttonsLine.ForeColor = Ink;
-                motionLine.Text = "Motion:  -";
-            }
+                SetStatus(connected + (connected == 1 ? " remote" : " remotes") + " connected. Waiting for the Xbox...", Good);
         }
     }
 }

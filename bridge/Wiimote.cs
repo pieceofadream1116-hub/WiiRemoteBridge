@@ -83,7 +83,16 @@ namespace WiiRemoteBridge
         const float SlowUnitsPerDeg = 4352f / 270f;   // same numbers Dolphin uses
         const float FastUnitsPerDeg = 4352f / 1200f;
 
-        public Wiimote(HidDevice dev, Action<string> log) { this.dev = dev; this.log = log; }
+        public readonly int Player; // 0 = player 1
+        public readonly HidDevice Device;
+
+        public Wiimote(HidDevice dev, int player, Action<string> log)
+        {
+            this.dev = dev;
+            Device = dev;
+            Player = player;
+            this.log = msg => log("Player " + (player + 1) + ": " + msg);
+        }
 
         public void Calibrate()
         {
@@ -260,7 +269,7 @@ namespace WiiRemoteBridge
 
         async Task SetupCore(CancellationToken ct)
         {
-            await Send(0x11, 0x10).ConfigureAwait(false); // first light on, no rumble
+            await Send(0x11, (byte)(0x10 << Player)).ConfigureAwait(false); // player's light on, no rumble
 
             var cal = await ReadMemory(0x00, 0x0016, 10).ConfigureAwait(false);
             if (cal != null)

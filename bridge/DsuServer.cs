@@ -24,7 +24,7 @@ namespace WiiRemoteBridge
         CancellationTokenSource cts;
         uint packetCount;
 
-        public Func<bool> RemoteConnected = () => false;
+        public Func<int, bool> RemoteConnected = pad => false;
         public long PacketsSent { get; private set; }
         public long Requests { get; private set; }
 
@@ -125,12 +125,12 @@ namespace WiiRemoteBridge
         // pad id, state, model, connection, MAC, battery (bytes 20-30)
         void WriteSharedStart(byte[] p, byte padId)
         {
-            bool on = padId == 0 && RemoteConnected();
+            bool on = padId < 4 && RemoteConnected(padId);
             p[20] = padId;
             p[21] = (byte)(on ? 2 : 0);   // connected / not
             p[22] = (byte)(on ? 2 : 0);   // full gyro
             p[23] = (byte)(on ? 2 : 0);   // bluetooth
-            if (on) { p[24] = 0x00; p[25] = 0x19; p[26] = 0x1D; p[27] = 0x00; p[28] = 0x00; p[29] = 0x01; }
+            if (on) { p[24] = 0x00; p[25] = 0x19; p[26] = 0x1D; p[27] = 0x00; p[28] = 0x00; p[29] = (byte)(padId + 1); }
             p[30] = (byte)(on ? 0x05 : 0x00); // battery full
         }
 
@@ -152,8 +152,8 @@ namespace WiiRemoteBridge
             try { udp?.Send(p, p.Length, to); PacketsSent++; } catch { }
         }
 
-        // Sends the remote's state to everyone who asked in the last 5 seconds.
-        public void SendState(WiiState s)
+        // Sends one remote's state (pad 0 = player 1) to everyone who asked in the last 5 seconds.
+        public void SendState(int pad, WiiState s)
         {
             List<IPEndPoint> targets;
             lock (gate)
@@ -165,7 +165,7 @@ namespace WiiRemoteBridge
             if (targets.Count == 0) return;
 
             var p = NewPacket(100, TypeData);
-            WriteSharedStart(p, 0);
+            WriteSharedStart(p, (byte)pad);
             p[31] = 1; // active
             BitConverter.GetBytes(packetCount++).CopyTo(p, 32);
 

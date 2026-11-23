@@ -58,6 +58,8 @@ through a **Mayflash Dolphin Bar on mode 4** (or a remote paired over Bluetooth)
 as a DSU / Cemuhook motion source on UDP port **26760**, so Dolphin on another device (like an
 Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
 
+- Up to 4 remotes at once: each remote synced to the bar becomes its own player
+  (first = DSU pad 0 = player 1, second = pad 1 = player 2, ...), with its player light lit.
 - Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,
   - = Share, + = Options, Home = Triangle, Nunchuk C/Z = L3/R3, Nunchuk stick = left stick.
