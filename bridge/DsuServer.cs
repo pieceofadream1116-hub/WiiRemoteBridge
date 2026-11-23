@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -18,11 +19,22 @@ namespace WiiRemoteBridge
 
         readonly Action<string> log;
         readonly uint serverId = (uint)new Random().Next();
-        readonly Dictionary<IPEndPoint, DateTime> clients = new Dictionary<IPEndPoint, DateTime>();
+        // Who asked for what. Dolphin opens one connection per controller and asks for just that
+        // pad on it, so each pad's data must only go where that pad was asked for. (Sending every
+        // pad everywhere mixed two remotes together in Dolphin: jumpy pointer, no player 2.)
+        sealed class Client
+        {
+            public DateTime Last;
+            public DateTime AllPads = DateTime.MinValue;
+            public readonly DateTime[] Pad = { DateTime.MinValue, DateTime.MinValue, DateTime.MinValue, DateTime.MinValue };
+            public bool Wants(int pad, DateTime now) =>
+                (now - AllPads).TotalSeconds < 5 || (pad >= 0 && pad < 4 && (now - Pad[pad]).TotalSeconds < 5);
+        }
+        readonly Dictionary<IPEndPoint, Client> clients = new Dictionary<IPEndPoint, Client>();
         readonly object gate = new object();
         UdpClient udp;
         CancellationTokenSource cts;
-        uint packetCount;
+        readonly uint[] packetCount = new uint[4];
 
         public Func<int, bool> RemoteConnected = pad => false;
         public long PacketsSent { get; private set; }
@@ -65,8 +77,8 @@ namespace WiiRemoteBridge
             var list = new List<string>();
             lock (gate)
                 foreach (var kv in clients)
-                    if ((DateTime.Now - kv.Value).TotalSeconds < 5) list.Add(kv.Key.Address.ToString());
-            return list;
+                    if ((DateTime.Now - kv.Value.Last).TotalSeconds < 5) list.Add(kv.Key.Address.ToString());
+            return list.Distinct().ToList();
         }
 
         async Task ReceiveLoop(CancellationToken ct)
@@ -110,13 +122,27 @@ namespace WiiRemoteBridge
                 }
                 case TypeData:
                 {
+                    if (m.Length < 28) break;
+                    byte flags = m[20], padId = m[21];
+                    var now = DateTime.Now;
                     bool isNew;
+                    string what;
                     lock (gate)
                     {
-                        isNew = !clients.ContainsKey(from) || (DateTime.Now - clients[from]).TotalSeconds > 5;
-                        clients[from] = DateTime.Now;
+                        isNew = !clients.TryGetValue(from, out var c) || (now - c.Last).TotalSeconds > 5;
+                        if (c == null || isNew) { c = new Client(); clients[from] = c; }
+                        c.Last = now;
+                        if (flags == 0) { c.AllPads = now; what = "all players"; }
+                        else
+                        {
+                            what = "";
+                            if ((flags & 1) != 0 && padId < 4) { c.Pad[padId] = now; what = "player " + (padId + 1); }
+                            // By MAC: ours end in 1-4 for players 1-4.
+                            if ((flags & 2) != 0 && m[22] == 0x00 && m[23] == 0x19 && m[24] == 0x1D && m[27] >= 1 && m[27] <= 4)
+                            { c.Pad[m[27] - 1] = now; what = "player " + m[27]; }
+                        }
                     }
-                    if (isNew) log("Dolphin is connected from " + from.Address + ".");
+                    if (isNew) log("Dolphin is connected from " + from.Address + " (asking for " + what + ").");
                     break;
                 }
             }
@@ -156,18 +182,19 @@ namespace WiiRemoteBridge
         public void SendState(int pad, WiiState s)
         {
             List<IPEndPoint> targets;
+            var now = DateTime.Now;
             lock (gate)
             {
                 targets = new List<IPEndPoint>();
                 foreach (var kv in clients)
-                    if ((DateTime.Now - kv.Value).TotalSeconds < 5) targets.Add(kv.Key);
+                    if (kv.Value.Wants(pad, now)) targets.Add(kv.Key);
             }
             if (targets.Count == 0) return;
 
             var p = NewPacket(100, TypeData);
             WriteSharedStart(p, (byte)pad);
             p[31] = 1; // active
-            BitConverter.GetBytes(packetCount++).CopyTo(p, 32);
+            BitConverter.GetBytes(packetCount[pad & 3]++).CopyTo(p, 32);
 
             byte b1 = 0, b2 = 0;
             if (s.Pressed(WiiState.Up)) b1 |= 0x10;

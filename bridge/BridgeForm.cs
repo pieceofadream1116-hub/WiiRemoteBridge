@@ -25,6 +25,9 @@ namespace WiiRemoteBridge
         readonly Button reconnectBtn = new Button();
         readonly Button flipXBtn = new Button();
         readonly Button flipYBtn = new Button();
+        readonly Button twistBtn = new Button();
+        readonly Button recenterBtn = new Button();
+        readonly PointerPreview preview = new PointerPreview();
         readonly TextBox logBox = new TextBox();
 
         static readonly Font Big = new Font("Segoe UI", 16f);
@@ -66,7 +69,7 @@ namespace WiiRemoteBridge
             try { File.WriteAllText(logPath, "Wii Remote Bridge log, " + DateTime.Now + Environment.NewLine); }
             catch { logPath = Path.Combine(Path.GetTempPath(), "WiiRemoteBridge-log.txt"); }
 
-            int rows = 5 + MaxPlayers + 1;
+            int rows = 6 + MaxPlayers + 1;
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = rows, Padding = new Padding(16) };
             for (int i = 0; i < rows - 1; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -94,12 +97,18 @@ namespace WiiRemoteBridge
             Style(flipYBtn, "", Color.FromArgb(90, 70, 150), 300);
             flipXBtn.Click += (s, e) => { Settings.FlipLeftRight = !Settings.FlipLeftRight; Settings.Save(); FlipText(); Log("Left/right " + (Settings.FlipLeftRight ? "flipped." : "back to normal.")); };
             flipYBtn.Click += (s, e) => { Settings.FlipUpDown = !Settings.FlipUpDown; Settings.Save(); FlipText(); Log("Up/down " + (Settings.FlipUpDown ? "flipped." : "back to normal.")); };
+            Style(twistBtn, "", Color.FromArgb(90, 70, 150), 300);
+            Style(recenterBtn, "Re-centre pointers", Color.FromArgb(32, 96, 200), 320);
+            twistBtn.Click += (s, e) => { Settings.TwistAiming = !Settings.TwistAiming; Settings.Save(); FlipText(); Log("Twist aiming " + (Settings.TwistAiming ? "on." : "off: tilt only, like before.")); };
+            recenterBtn.Click += (s, e) => { foreach (var seat in seats) seat.Remote?.Recenter(); };
             FlipText();
             buttons.Controls.Add(startBtn);
             buttons.Controls.Add(calibrateBtn);
             buttons.Controls.Add(reconnectBtn);
             buttons.Controls.Add(flipXBtn);
             buttons.Controls.Add(flipYBtn);
+            buttons.Controls.Add(twistBtn);
+            buttons.Controls.Add(recenterBtn);
             layout.Controls.Add(buttons);
 
             foreach (var l in new[] { barLine, xboxLine })
@@ -118,6 +127,9 @@ namespace WiiRemoteBridge
 
             var pcIp = new Label { AutoSize = true, Font = Big, Margin = new Padding(0, 6, 0, 8), Text = "This PC's address for Dolphin:  " + LocalAddresses() + "   port " + DsuServer.DefaultPort };
             layout.Controls.Add(pcIp);
+
+            preview.Seats = () => seats.Select(x => (x.Remote != null, x.Latest)).ToArray();
+            layout.Controls.Add(preview);
 
             logBox.Dock = DockStyle.Fill;
             logBox.Multiline = true;
@@ -158,6 +170,7 @@ namespace WiiRemoteBridge
         {
             flipXBtn.Text = Settings.FlipLeftRight ? "Left/right: FLIPPED" : "Flip left/right";
             flipYBtn.Text = Settings.FlipUpDown ? "Up/down: FLIPPED" : "Flip up/down";
+            twistBtn.Text = Settings.TwistAiming ? "Twist aiming: ON" : "Twist aiming: OFF";
         }
 
         static string LocalAddresses()
@@ -343,6 +356,7 @@ namespace WiiRemoteBridge
 
         void RefreshLive()
         {
+            preview.Invalidate();
             int connected = 0;
             for (int i = 0; i < MaxPlayers; i++)
             {
@@ -368,7 +382,7 @@ namespace WiiRemoteBridge
                 string motion = s.HasAccel
                     ? string.Format("tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
                     : "no tilt data yet (0x" + s.ReportId.ToString("X2") + "), fixing...";
-                if (s.TwistMode) motion += "   pointer: twist your wrist to aim";
+                if (s.TwistMode) motion += s.Recentering ? "   pointer: RE-CENTRING" : "   pointer: twist to aim, hold minus to re-centre";
                 else if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
                 l.Text = name + "slot " + w.Device.Slot + extras + Environment.NewLine +
                          "      Buttons: " + s.ButtonText() + "      " + motion;
@@ -388,6 +402,52 @@ namespace WiiRemoteBridge
                 SetStatus("WORKING! " + connected + (connected == 1 ? " remote is" : " remotes are") + " going to the Xbox.", Good);
             else
                 SetStatus(connected + (connected == 1 ? " remote" : " remotes") + " connected. Waiting for the Xbox...", Good);
+        }
+    }
+
+    // Test screen: one small box per player with a dot where the pointer should be.
+    internal sealed class PointerPreview : Control
+    {
+        public Func<(bool connected, WiiState state)[]> Seats;
+
+        public PointerPreview()
+        {
+            DoubleBuffered = true;
+            Size = new Size(900, 150);
+            Margin = new Padding(0, 4, 0, 8);
+            Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(Parent?.BackColor ?? Color.White);
+            var seats = Seats?.Invoke();
+            if (seats == null) return;
+            int boxW = 200, boxH = 112, gap = 24, top = 28;
+            for (int i = 0; i < seats.Length; i++)
+            {
+                int x = i * (boxW + gap);
+                var box = new Rectangle(x, top, boxW, boxH);
+                g.DrawString("Player " + (i + 1) + " pointer", Font, Brushes.Black, x, 2);
+                using (var fill = new SolidBrush(Color.FromArgb(32, 36, 44))) g.FillRectangle(fill, box);
+                using (var pen = new Pen(Color.FromArgb(80, 86, 96))) { g.DrawLine(pen, box.Left + boxW / 2, box.Top, box.Left + boxW / 2, box.Bottom); g.DrawLine(pen, box.Left, box.Top + boxH / 2, box.Right, box.Top + boxH / 2); }
+                var (connected, s) = seats[i];
+                string note = null;
+                if (!connected || s == null) note = "no remote";
+                else if (!s.TwistMode) note = s.HasGyro ? "MotionPlus" : "tilt only";
+                if (note != null)
+                {
+                    var size = g.MeasureString(note, Font);
+                    g.DrawString(note, Font, Brushes.Gainsboro, box.Left + (boxW - size.Width) / 2, box.Top + (boxH - size.Height) / 2);
+                    continue;
+                }
+                float px = box.Left + boxW / 2f + s.PointerX * (boxW / 2f - 10);
+                float py = box.Top + boxH / 2f - s.PointerY * (boxH / 2f - 10);
+                using var dot = new SolidBrush(s.Recentering ? Color.Orange : Color.LimeGreen);
+                g.FillEllipse(dot, px - 9, py - 9, 18, 18);
+            }
         }
     }
 }

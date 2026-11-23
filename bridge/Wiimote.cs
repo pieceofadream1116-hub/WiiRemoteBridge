@@ -14,6 +14,8 @@ namespace WiiRemoteBridge
         public byte ReportId;
         public bool HasGyro;
         public bool TwistMode;              // pointer made from wrist twist (no MotionPlus)
+        public float PointerX, PointerY;    // our copy of where Dolphin's pointer is (-1..1), twist mode only
+        public bool Recentering;
         public float Pitch, Roll, Yaw;       // MotionPlus, degrees per second (+ = the remote's own raw direction)
         public bool HasNunchuk;
         public byte StickX = 128, StickY = 128;
@@ -85,13 +87,29 @@ namespace WiiRemoteBridge
         // from turning (gyro) data, so we turn the wrist's twist and tilt into smooth turning data
         // that walks Dolphin's pointer to where the remote is aimed.
         const float YawLimit = 12.5f;     // half of Dolphin's default "Total Yaw" (25 degrees); Dolphin clamps here too
-        const float TwistRange = 35f;     // twisting this far reaches the edge of the screen
-        const float Follow = 15f;         // how quickly the pointer catches up (per second)
+        const float TwistRange = 45f;     // twisting this far reaches the edge of the screen
+        const float TiltRange = 30f;      // for the test screen only
+        const float Follow = 10f;         // how quickly the pointer catches up (per second)
+        const float Smooth = 0.12f;       // lower = steadier, slower
+        const float HoldStill = 1.5f;     // degrees the wrist must move before the pointer follows
+        const int RecenterHoldMs = 600;   // hold minus this long to re-centre
         const float MaxRate = 400f;       // degrees per second
         const float DolphinDeadZone = 3.5f; // Dolphin ignores slower turning than this (profile dead zone 3)
-        float twistSmooth, tiltSmooth, virtualYaw, virtualPitch;
+        float twistSmooth, tiltSmooth, twistHeld, tiltHeld, virtualYaw, virtualPitch;
         long lastTwistUs;
         bool twistStarted;
+        volatile bool recenterRequested;
+        int recenterPhase;        // >0 while pushing the pointer to the left edge to line up with Dolphin
+        long minusDownUs = -1;    // when minus went down (twist mode), or -1
+        bool minusFired;
+        long minusPulseUntilUs;
+
+        // Push Dolphin's pointer to its left limit (where it stops) and back, so both copies line up.
+        public void Recenter()
+        {
+            recenterRequested = true;
+            log("Re-centring the pointer.");
+        }
 
         const float SlowUnitsPerDeg = 4352f / 270f;   // same numbers Dolphin uses
         const float FastUnitsPerDeg = 4352f / 1200f;
@@ -407,7 +425,11 @@ namespace WiiRemoteBridge
             }
             else s.Az = 1;
 
-            if (hasAccel && !HasMotionPlus) TwistPointer(s);
+            if (hasAccel && !HasMotionPlus && Settings.TwistAiming)
+            {
+                MinusHold(s);
+                TwistPointer(s);
+            }
 
             int extAt = id == 0x32 || id == 0x34 ? 3 : id == 0x35 ? 6 : id == 0x36 ? 13 : id == 0x37 ? 16 : -1;
             if (extAt > 0 && r.Length >= extAt + 6)
@@ -427,35 +449,72 @@ namespace WiiRemoteBridge
             StateChanged?.Invoke(s);
         }
 
+        // In twist mode, holding minus re-centres the pointer instead of pressing minus.
+        // A quick tap still reaches the game as a short minus press.
+        void MinusHold(WiiState s)
+        {
+            bool down = s.Pressed(WiiState.Minus);
+            s.Buttons = (ushort)(s.Buttons & ~WiiState.Minus);
+            if (down)
+            {
+                if (minusDownUs < 0) { minusDownUs = s.TimestampUs; minusFired = false; }
+                else if (!minusFired && s.TimestampUs - minusDownUs >= RecenterHoldMs * 1000L)
+                {
+                    minusFired = true;
+                    Recenter();
+                }
+            }
+            else if (minusDownUs >= 0)
+            {
+                if (!minusFired) minusPulseUntilUs = s.TimestampUs + 120_000;
+                minusDownUs = -1;
+            }
+            if (s.TimestampUs < minusPulseUntilUs) s.Buttons |= WiiState.Minus;
+        }
+
         void TwistPointer(WiiState s)
         {
             float twist = (float)(Math.Atan2(s.Ax, s.Az) * 180 / Math.PI);                                   // roll
             float tilt = (float)(Math.Atan2(s.Ay, Math.Sqrt(s.Ax * s.Ax + s.Az * s.Az)) * 180 / Math.PI);   // pitch
             if (!twistStarted)
             {
-                twistSmooth = twist; tiltSmooth = tilt;
+                twistSmooth = twistHeld = twist; tiltSmooth = tiltHeld = tilt;
                 virtualYaw = 0; virtualPitch = tilt;
                 lastTwistUs = s.TimestampUs;
                 twistStarted = true;
+                recenterRequested = true; // line up with Dolphin straight away
             }
             float dt = Math.Clamp((s.TimestampUs - lastTwistUs) / 1_000_000f, 0.001f, 0.05f);
             lastTwistUs = s.TimestampUs;
 
-            // Smooth out the shake from the sensor.
-            twistSmooth += (twist - twistSmooth) * 0.25f;
-            tiltSmooth += (tilt - tiltSmooth) * 0.25f;
+            // Smooth out the shake from the sensor, then ignore tiny wobbles.
+            twistSmooth += (twist - twistSmooth) * Smooth;
+            tiltSmooth += (tilt - tiltSmooth) * Smooth;
+            if (Math.Abs(twistSmooth - twistHeld) > HoldStill) twistHeld += Math.Sign(twistSmooth - twistHeld) * (Math.Abs(twistSmooth - twistHeld) - HoldStill);
+            if (Math.Abs(tiltSmooth - tiltHeld) > HoldStill) tiltHeld += Math.Sign(tiltSmooth - tiltHeld) * (Math.Abs(tiltSmooth - tiltHeld) - HoldStill);
 
-            float targetYaw = Math.Clamp(twistSmooth / TwistRange * YawLimit, -YawLimit, YawLimit) * (Settings.FlipLeftRight ? -1 : 1);
-            float targetPitch = tiltSmooth * (Settings.FlipUpDown ? -1 : 1);
+            float targetYaw = Math.Clamp(twistHeld / TwistRange * YawLimit, -YawLimit, YawLimit) * (Settings.FlipLeftRight ? -1 : 1);
+            float targetPitch = tiltHeld * (Settings.FlipUpDown ? -1 : 1);
+
+            if (recenterRequested) { recenterRequested = false; recenterPhase = 1; }
+            if (recenterPhase > 0)
+            {
+                // Aim past the left limit: Dolphin stops at the limit, and so does our copy.
+                targetYaw = -YawLimit - 20;
+                if (virtualYaw <= -YawLimit + 0.01f && ++recenterPhase > 5) recenterPhase = 0;
+            }
 
             float yawRate = Step(ref virtualYaw, targetYaw, dt, true);
             float pitchRate = Step(ref virtualPitch, targetPitch, dt, false);
 
             s.HasGyro = true;
             s.TwistMode = true;
+            s.Recentering = recenterPhase > 0;
             s.Yaw = yawRate;
             s.Pitch = pitchRate;
             s.Roll = 0;
+            s.PointerX = Math.Clamp(virtualYaw / YawLimit * (Settings.FlipLeftRight ? -1 : 1), -1, 1);
+            s.PointerY = Math.Clamp(virtualPitch / TiltRange * (Settings.FlipUpDown ? -1 : 1), -1, 1);
         }
 
         // Turning speed that moves our copy of Dolphin's pointer towards the target, done the

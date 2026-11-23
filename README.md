@@ -65,7 +65,11 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
   left/right and tilting moves it up/down. The bridge sends turning (gyro) data that walks
   Dolphin's pointer to the aimed spot, mirroring Dolphin's yaw limit (Total Yaw 25) and gyro dead
   zone so the two stay in step. "Flip left/right" / "Flip up/down" buttons, remembered in
-  `WiiRemoteBridge-settings.txt`.
+  `WiiRemoteBridge-settings.txt`. Hold **minus** for about half a second to re-centre (a quick tap
+  still presses minus). "Twist aiming" can be switched off. A small test screen shows each
+  player's pointer.
+- Each player's data only goes to the Dolphin connection that asked for that player (Dolphin
+  opens one per controller), so two remotes never get mixed together.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,
   - = Share, + = Options, Home = Triangle, Nunchuk C/Z = L3/R3, Nunchuk stick = left stick.
 - Tries four ways of sending to each Dolphin Bar slot and shows which one works, with the
