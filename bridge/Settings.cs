@@ -9,6 +9,8 @@ namespace WiiRemoteBridge
         public static volatile bool FlipLeftRight;
         public static volatile bool FlipUpDown;
         public static volatile bool TwistAiming = true;
+        public static volatile bool IrFlipLeftRight;
+        public static volatile bool IrFlipUpDown;
 
         static string FilePath => Path.Combine(AppContext.BaseDirectory, "WiiRemoteBridge-settings.txt");
 
@@ -24,6 +26,8 @@ namespace WiiRemoteBridge
                     if (parts[0].Trim() == "AimFlipLeftRight") FlipLeftRight = on;
                     if (parts[0].Trim() == "AimFlipUpDown") FlipUpDown = on;
                     if (parts[0].Trim() == "TwistAiming") TwistAiming = on;
+                    if (parts[0].Trim() == "BarFlipLeftRight") IrFlipLeftRight = on;
+                    if (parts[0].Trim() == "BarFlipUpDown") IrFlipUpDown = on;
                 }
             }
             catch { }
@@ -31,7 +35,8 @@ namespace WiiRemoteBridge
 
         public static void Save()
         {
-            try { File.WriteAllText(FilePath, "AimFlipLeftRight=" + FlipLeftRight + Environment.NewLine + "AimFlipUpDown=" + FlipUpDown + Environment.NewLine + "TwistAiming=" + TwistAiming + Environment.NewLine); }
+            try { File.WriteAllText(FilePath, "AimFlipLeftRight=" + FlipLeftRight + Environment.NewLine + "AimFlipUpDown=" + FlipUpDown + Environment.NewLine + "TwistAiming=" + TwistAiming + Environment.NewLine
+                + "BarFlipLeftRight=" + IrFlipLeftRight + Environment.NewLine + "BarFlipUpDown=" + IrFlipUpDown + Environment.NewLine); }
             catch { }
         }
     }

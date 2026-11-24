@@ -69,6 +69,11 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
   current aim the middle; a quick tap still presses minus. "Flip left/right" / "Flip up/down" and
   "Twist aiming" on/off are remembered in `WiiRemoteBridge-settings.txt`. A small test screen shows
   each player's pointer.
+- **Sensor bar aiming** for remotes without MotionPlus: the remote's IR camera is switched on
+  (report 0x33, or 0x37 with a Nunchuk) and the bar's two light dots give a steady absolute aim,
+  with the wrist's twist taken out. When the bar isn't seen it glides over to twist aiming, and
+  back. The flip buttons apply to whichever aiming is in use. One Euro smoothing keeps both steady
+  when still without lag when moving.
 - Each player's data only goes to the Dolphin connection that asked for that player (Dolphin
   opens one per controller), so two remotes never get mixed together.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,

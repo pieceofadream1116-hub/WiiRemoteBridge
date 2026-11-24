@@ -16,6 +16,8 @@ namespace WiiRemoteBridge
         public bool TwistMode;              // pointer made from wrist twist (no MotionPlus)
         public float PointerX, PointerY;    // our copy of where Dolphin's pointer is (-1..1), twist mode only
         public bool Recentering;
+        public bool BarAiming;              // pointer from the sensor bar's light dots right now
+        public int BarDots;                 // how many light dots the camera sees
         public float Pitch, Roll, Yaw;       // MotionPlus, degrees per second (+ = the remote's own raw direction)
         public bool HasNunchuk;
         public byte StickX = 128, StickY = 128;
@@ -89,10 +91,27 @@ namespace WiiRemoteBridge
         // so it can't drift, and the flips apply in the game.
         const float TwistRange = 40f;     // twisting this far reaches the side edge of the screen
         const float TiltRange = 25f;      // tilting this far reaches the top/bottom edge
-        const float HoldStill = 0.8f;     // degrees the wrist must move before the pointer follows
+        const float HoldStill = 0.3f;     // degrees the wrist must move before the pointer follows
         const float SwingThreshold = 0.35f; // g: quicker movement than this still reaches the game
         const int RecenterHoldMs = 600;   // hold minus this long to make the current aim the centre
         float twistSmooth, tiltSmooth, twistHeld, tiltHeld, twistZero, tiltZero;
+        readonly OneEuro twistFilter = new OneEuro(0.8, 0.03), tiltFilter = new OneEuro(0.8, 0.03);
+        readonly OneEuro barXFilter = new OneEuro(1.0, 1.5), barYFilter = new OneEuro(1.0, 1.5);
+        long lastPointerUs;
+
+        // Sensor bar (camera) aiming
+        const float BarGain = 1.25f;      // how far the pointer moves per bit of aiming
+        const long BarHoldUs = 250_000;   // keep using the bar this long after the dots disappear
+        readonly int[] dotX = new int[4], dotY = new int[4];
+        int dotCount;
+        long dotsUs;
+        double lastMidX = 512, lastMidY = 384, halfX = 60, halfY = 0;
+        long lastBarUs = -10_000_000;
+        float lastBarX, lastBarY, barZeroX, barZeroY;
+        bool lastWasBar;
+        float blendFromX, blendFromY;
+        long blendStartUs = -10_000_000;
+        public static bool AnyBarAiming;
         float gx, gy, gz = 1;             // slow-moving gravity estimate
         bool twistStarted;
         volatile bool recenterRequested;
@@ -344,7 +363,12 @@ namespace WiiRemoteBridge
                 log("No MotionPlus: motion will use tilt only.");
             }
 
-            mode = (byte)(HasMotionPlus || HasNunchuk ? 0x35 : 0x31);
+            if (HasMotionPlus) mode = 0x35;           // buttons + tilt + MotionPlus
+            else
+            {
+                await SetupCamera(!HasNunchuk).ConfigureAwait(false);
+                mode = (byte)(HasNunchuk ? 0x37 : 0x33); // buttons + tilt + camera (+ Nunchuk)
+            }
             await SetMode(mode).ConfigureAwait(false);
             if (HasMotionPlus) Calibrate();
             log("Asked the remote for report 0x" + mode.ToString("X2") + ".");
@@ -379,17 +403,34 @@ namespace WiiRemoteBridge
             return data;
         }
 
-        async Task<bool> WriteRegister(int address, byte value)
+        async Task<bool> WriteRegister(int address, params byte[] data)
         {
             pendingAck = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
             var report = new byte[22];
             report[0] = 0x16; report[1] = 0x04;
             report[2] = (byte)(address >> 16); report[3] = (byte)(address >> 8); report[4] = (byte)address;
-            report[5] = 1; report[6] = value;
+            report[5] = (byte)data.Length;
+            Array.Copy(data, 0, report, 6, Math.Min(16, data.Length));
             string err = await Send(report).ConfigureAwait(false);
             if (err != null) { log("Write failed: " + err); return false; }
             var ack = await Wait(pendingAck.Task, 1000).ConfigureAwait(false);
             return ack != null && ack[4] == 0;
+        }
+
+        // Switches on the remote's little camera that sees the sensor bar's light dots.
+        async Task<bool> SetupCamera(bool extended)
+        {
+            await Send(0x13, 0x04).ConfigureAwait(false);
+            await Task.Delay(50).ConfigureAwait(false);
+            await Send(0x1A, 0x04).ConfigureAwait(false);
+            await Task.Delay(50).ConfigureAwait(false);
+            bool ok = await WriteRegister(0xB00030, 0x08).ConfigureAwait(false);
+            ok &= await WriteRegister(0xB00000, 0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xAA, 0x00, 0x64).ConfigureAwait(false);
+            ok &= await WriteRegister(0xB0001A, 0x63, 0x03).ConfigureAwait(false);
+            ok &= await WriteRegister(0xB00033, (byte)(extended ? 3 : 1)).ConfigureAwait(false);
+            ok &= await WriteRegister(0xB00030, 0x08).ConfigureAwait(false);
+            log(ok ? "Camera on: the remote can aim with the sensor bar's lights." : "The camera didn't switch on fully. Twist aiming will still work.");
+            return ok;
         }
 
         static async Task<byte[]> Wait(Task<byte[]> t, int ms)
@@ -421,6 +462,9 @@ namespace WiiRemoteBridge
                 s.Az = (az - accZero[2]) / (float)(accOne[2] - accZero[2]);
             }
             else s.Az = 1;
+
+            if (id == 0x33 && r.Length >= 18) ParseCamera(r, 6, true, s.TimestampUs);
+            else if (id == 0x37 && r.Length >= 16) ParseCamera(r, 6, false, s.TimestampUs);
 
             if (hasAccel && !HasMotionPlus && Settings.TwistAiming)
             {
@@ -469,33 +513,139 @@ namespace WiiRemoteBridge
             if (s.TimestampUs < minusPulseUntilUs) s.Buttons |= WiiState.Minus;
         }
 
+        void ParseCamera(byte[] r, int at, bool extended, long nowUs)
+        {
+            int n = 0;
+            if (extended)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    int o = at + i * 3;
+                    byte b0 = r[o], b1 = r[o + 1], b2 = r[o + 2];
+                    int x = b0 | (((b2 >> 4) & 3) << 8), y = b1 | (((b2 >> 6) & 3) << 8);
+                    if (x >= 1023 || y >= 1023) continue;
+                    dotX[n] = x; dotY[n] = y; n++;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    int o = at + i * 5;
+                    byte b0 = r[o], b1 = r[o + 1], b2 = r[o + 2], b3 = r[o + 3], b4 = r[o + 4];
+                    int x1 = b0 | (((b2 >> 4) & 3) << 8), y1 = b1 | (((b2 >> 6) & 3) << 8);
+                    int x2 = b3 | ((b2 & 3) << 8), y2 = b4 | (((b2 >> 2) & 3) << 8);
+                    if (x1 < 1023 && y1 < 1023) { dotX[n] = x1; dotY[n] = y1; n++; }
+                    if (x2 < 1023 && y2 < 1023) { dotX[n] = x2; dotY[n] = y2; n++; }
+                }
+            }
+            dotCount = n;
+            dotsUs = nowUs;
+        }
+
+        // Where the sensor bar says the remote is aiming (-1..1, up and right positive), if it can see it.
+        bool BarPointer(long nowUs, out float px, out float py, out float rawX, out float rawY)
+        {
+            px = py = rawX = rawY = 0;
+            double midX, midY;
+            if (dotCount >= 2 && nowUs - dotsUs < 100_000)
+            {
+                // The two dots furthest apart are the two ends of the bar.
+                int a = 0, b = 1; double best = -1;
+                for (int i = 0; i < dotCount; i++)
+                    for (int j = i + 1; j < dotCount; j++)
+                    {
+                        double d = Math.Pow(dotX[i] - dotX[j], 2) + Math.Pow(dotY[i] - dotY[j], 2);
+                        if (d > best) { best = d; a = i; b = j; }
+                    }
+                if (dotX[a] > dotX[b]) (a, b) = (b, a);
+                midX = (dotX[a] + dotX[b]) / 2.0;
+                midY = (dotY[a] + dotY[b]) / 2.0;
+                halfX = (dotX[b] - dotX[a]) / 2.0;
+                halfY = (dotY[b] - dotY[a]) / 2.0;
+            }
+            else if (dotCount == 1 && nowUs - dotsUs < 100_000 && nowUs - lastBarUs < 1_000_000)
+            {
+                // One dot: it's one end of the bar. Pick the end that keeps the middle closest to before.
+                double m1x = dotX[0] - halfX, m1y = dotY[0] - halfY, m2x = dotX[0] + halfX, m2y = dotY[0] + halfY;
+                bool first = Math.Pow(m1x - lastMidX, 2) + Math.Pow(m1y - lastMidY, 2) <= Math.Pow(m2x - lastMidX, 2) + Math.Pow(m2y - lastMidY, 2);
+                midX = first ? m1x : m2x;
+                midY = first ? m1y : m2y;
+            }
+            else if (nowUs - lastBarUs < BarHoldUs)
+            {
+                px = lastBarX; py = lastBarY; return true; // brief blink: hold where it was
+            }
+            else return false;
+
+            lastMidX = midX; lastMidY = midY;
+
+            // Undo the wrist's twist: turn the picture so the bar is level again.
+            double angle = Math.Atan2(halfY, halfX);
+            double cx = midX - 512, cy = midY - 384;
+            double rx = cx * Math.Cos(-angle) - cy * Math.Sin(-angle);
+            double ry = cx * Math.Sin(-angle) + cy * Math.Cos(-angle);
+
+            // The camera's picture is mirrored: aiming right or up moves the dots towards higher numbers.
+            rawX = (float)(rx / 512 * BarGain);
+            rawY = (float)(ry / 384 * BarGain);
+            px = Math.Clamp(rawX - barZeroX, -1, 1) * (Settings.IrFlipLeftRight ? -1 : 1);
+            py = Math.Clamp(rawY - barZeroY, -1, 1) * (Settings.IrFlipUpDown ? -1 : 1);
+            lastBarX = px; lastBarY = py; lastBarUs = nowUs;
+            return true;
+        }
+
         void TwistPointer(WiiState s)
         {
             float twist = (float)(Math.Atan2(s.Ax, s.Az) * 180 / Math.PI);                                   // roll
             float tilt = (float)(Math.Atan2(s.Ay, Math.Sqrt(s.Ax * s.Ax + s.Az * s.Az)) * 180 / Math.PI);   // pitch
             if (!twistStarted)
             {
-                twistSmooth = twistHeld = twist; tiltSmooth = tiltHeld = tilt;
+                twistHeld = twist; tiltHeld = tilt;
                 gx = s.Ax; gy = s.Ay; gz = s.Az;
+                lastPointerUs = s.TimestampUs;
                 twistStarted = true;
             }
+            double dt = Math.Clamp((s.TimestampUs - lastPointerUs) / 1_000_000.0, 0.002, 0.05);
+            lastPointerUs = s.TimestampUs;
 
-            // Smoothing that adapts: tiny wobbles are smoothed heavily (steady), real moves follow fast.
-            twistSmooth += (twist - twistSmooth) * Adapt(twist - twistSmooth);
-            tiltSmooth += (tilt - tiltSmooth) * Adapt(tilt - tiltSmooth);
+            // Twist aiming: steady when still, quick when moving, then ignore the tiniest wobble.
+            twistSmooth = (float)twistFilter.Filter(twist, dt);
+            tiltSmooth = (float)tiltFilter.Filter(tilt, dt);
             if (Math.Abs(twistSmooth - twistHeld) > HoldStill) twistHeld += Math.Sign(twistSmooth - twistHeld) * (Math.Abs(twistSmooth - twistHeld) - HoldStill);
             if (Math.Abs(tiltSmooth - tiltHeld) > HoldStill) tiltHeld += Math.Sign(tiltSmooth - tiltHeld) * (Math.Abs(tiltSmooth - tiltHeld) - HoldStill);
+
+            // Sensor bar aiming, when the camera can see the bar.
+            bool bar = BarPointer(s.TimestampUs, out float bx, out float by, out float rawBx, out float rawBy);
 
             if (recenterRequested)
             {
                 recenterRequested = false;
                 twistZero = twistHeld;
                 tiltZero = tiltHeld;
+                if (bar && dotCount > 0) { barZeroX = rawBx; barZeroY = rawBy; bar = BarPointer(s.TimestampUs, out bx, out by, out _, out _); }
                 recenterShowUntilUs = s.TimestampUs + 700_000;
             }
 
-            float x = Math.Clamp((twistHeld - twistZero) / TwistRange, -1, 1) * (Settings.FlipLeftRight ? -1 : 1);
-            float y = Math.Clamp((tiltHeld - tiltZero) / TiltRange, -1, 1) * (Settings.FlipUpDown ? -1 : 1);
+            float x, y;
+            if (bar)
+            {
+                x = (float)barXFilter.Filter(bx, dt);
+                y = (float)barYFilter.Filter(by, dt);
+            }
+            else
+            {
+                barXFilter.Reset(); barYFilter.Reset();
+                x = Math.Clamp((twistHeld - twistZero) / TwistRange, -1, 1) * (Settings.FlipLeftRight ? -1 : 1);
+                y = Math.Clamp((tiltHeld - tiltZero) / TiltRange, -1, 1) * (Settings.FlipUpDown ? -1 : 1);
+            }
+
+            // Glide (0.15 s) instead of jumping when switching between bar and twist aiming.
+            if (bar != lastWasBar) { blendFromX = lastOutX; blendFromY = lastOutY; blendStartUs = s.TimestampUs; lastWasBar = bar; }
+            float k = Math.Clamp((s.TimestampUs - blendStartUs) / 150_000f, 0, 1);
+            x = blendFromX + (x - blendFromX) * k;
+            y = blendFromY + (y - blendFromY) * k;
+            lastOutX = x; lastOutY = y;
 
             // What Dolphin gets as the tilt sensor: the real sideways twist, no up/down tilt (the stick
             // does that), plus any quick swing or shake so games still feel those.
@@ -510,16 +660,14 @@ namespace WiiRemoteBridge
             s.HasGyro = false;  // no turning data: the stick does the aiming
             s.Pitch = s.Roll = s.Yaw = 0;
             s.TwistMode = true;
+            s.BarAiming = bar;
+            s.BarDots = s.TimestampUs - dotsUs < 100_000 ? dotCount : 0;
+            AnyBarAiming = bar;
             s.Recentering = s.TimestampUs < recenterShowUntilUs;
             s.PointerX = x;
             s.PointerY = y;
         }
-
-        static float Adapt(float delta)
-        {
-            float d = Math.Abs(delta);
-            return Math.Clamp(0.05f + d * 0.03f, 0.05f, 0.6f);
-        }
+        float lastOutX, lastOutY;
 
         void MotionPlusData(byte[] r, int at, WiiState s)
         {

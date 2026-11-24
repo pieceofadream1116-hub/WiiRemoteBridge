@@ -93,10 +93,23 @@ namespace WiiRemoteBridge
                 foreach (var seat in seats) seat.Cts?.Cancel();
             };
             Settings.Load();
-            Style(flipXBtn, "", Color.FromArgb(90, 70, 150), 300);
-            Style(flipYBtn, "", Color.FromArgb(90, 70, 150), 300);
-            flipXBtn.Click += (s, e) => { Settings.FlipLeftRight = !Settings.FlipLeftRight; Settings.Save(); FlipText(); Log("Left/right " + (Settings.FlipLeftRight ? "flipped." : "back to normal.")); };
-            flipYBtn.Click += (s, e) => { Settings.FlipUpDown = !Settings.FlipUpDown; Settings.Save(); FlipText(); Log("Up/down " + (Settings.FlipUpDown ? "flipped." : "back to normal.")); };
+            Style(flipXBtn, "", Color.FromArgb(90, 70, 150), 420);
+            Style(flipYBtn, "", Color.FromArgb(90, 70, 150), 420);
+            // The flips apply to whichever aiming is in use right now (sensor bar or twist).
+            flipXBtn.Click += (s, e) =>
+            {
+                bool bar = Wiimote.AnyBarAiming;
+                if (bar) Settings.IrFlipLeftRight = !Settings.IrFlipLeftRight; else Settings.FlipLeftRight = !Settings.FlipLeftRight;
+                Settings.Save(); FlipText();
+                Log((bar ? "Sensor bar" : "Twist") + " left/right " + ((bar ? Settings.IrFlipLeftRight : Settings.FlipLeftRight) ? "flipped." : "back to normal."));
+            };
+            flipYBtn.Click += (s, e) =>
+            {
+                bool bar = Wiimote.AnyBarAiming;
+                if (bar) Settings.IrFlipUpDown = !Settings.IrFlipUpDown; else Settings.FlipUpDown = !Settings.FlipUpDown;
+                Settings.Save(); FlipText();
+                Log((bar ? "Sensor bar" : "Twist") + " up/down " + ((bar ? Settings.IrFlipUpDown : Settings.FlipUpDown) ? "flipped." : "back to normal."));
+            };
             Style(twistBtn, "", Color.FromArgb(90, 70, 150), 300);
             Style(recenterBtn, "Set centre", Color.FromArgb(32, 96, 200), 320);
             twistBtn.Click += (s, e) => { Settings.TwistAiming = !Settings.TwistAiming; Settings.Save(); FlipText(); Log("Twist aiming " + (Settings.TwistAiming ? "on." : "off: tilt only, like before.")); };
@@ -168,8 +181,14 @@ namespace WiiRemoteBridge
 
         void FlipText()
         {
-            flipXBtn.Text = Settings.FlipLeftRight ? "Left/right: FLIPPED" : "Flip left/right";
-            flipYBtn.Text = Settings.FlipUpDown ? "Up/down: FLIPPED" : "Flip up/down";
+            bool bar = Wiimote.AnyBarAiming;
+            bool fx = bar ? Settings.IrFlipLeftRight : Settings.FlipLeftRight;
+            bool fy = bar ? Settings.IrFlipUpDown : Settings.FlipUpDown;
+            string who = bar ? " (bar)" : " (twist)";
+            string tx = (fx ? "Left/right: FLIPPED" : "Flip left/right") + who;
+            string ty = (fy ? "Up/down: FLIPPED" : "Flip up/down") + who;
+            if (flipXBtn.Text != tx) flipXBtn.Text = tx;
+            if (flipYBtn.Text != ty) flipYBtn.Text = ty;
             twistBtn.Text = Settings.TwistAiming ? "Twist aiming: ON" : "Twist aiming: OFF";
         }
 
@@ -357,6 +376,7 @@ namespace WiiRemoteBridge
         void RefreshLive()
         {
             preview.Invalidate();
+            FlipText();
             int connected = 0;
             for (int i = 0; i < MaxPlayers; i++)
             {
@@ -382,7 +402,10 @@ namespace WiiRemoteBridge
                 string motion = s.HasAccel
                     ? string.Format("tilt {0:+0.0;-0.0} {1:+0.0;-0.0} {2:+0.0;-0.0}", s.Ax, s.Ay, s.Az)
                     : "no tilt data yet (0x" + s.ReportId.ToString("X2") + "), fixing...";
-                if (s.TwistMode) motion += s.Recentering ? "   pointer: CENTRE SET" : "   pointer: twist + tilt to aim, hold minus to set centre";
+                if (s.TwistMode)
+                    motion += s.Recentering ? "   pointer: CENTRE SET"
+                        : s.BarAiming ? "   aiming: SENSOR BAR (" + s.BarDots + " dot" + (s.BarDots == 1 ? "" : "s") + "), hold minus to set centre"
+                        : "   aiming: twist + tilt (bar not seen), hold minus to set centre";
                 else if (s.HasGyro) motion += string.Format("   turn {0:+000;-000} {1:+000;-000} {2:+000;-000}", s.Pitch, s.Roll, s.Yaw);
                 l.Text = name + "slot " + w.Device.Slot + extras + Environment.NewLine +
                          "      Buttons: " + s.ButtonText() + "      " + motion;
@@ -445,7 +468,7 @@ namespace WiiRemoteBridge
                 }
                 float px = box.Left + boxW / 2f + s.PointerX * (boxW / 2f - 10);
                 float py = box.Top + boxH / 2f - s.PointerY * (boxH / 2f - 10);
-                using var dot = new SolidBrush(s.Recentering ? Color.Orange : Color.LimeGreen);
+                using var dot = new SolidBrush(s.Recentering ? Color.Orange : s.BarAiming ? Color.DeepSkyBlue : Color.LimeGreen);
                 g.FillEllipse(dot, px - 9, py - 9, 18, 18);
             }
         }
