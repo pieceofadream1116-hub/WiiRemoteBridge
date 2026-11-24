@@ -118,10 +118,6 @@ namespace WiiRemoteBridge
             buttons.Controls.Add(startBtn);
             buttons.Controls.Add(calibrateBtn);
             buttons.Controls.Add(reconnectBtn);
-            buttons.Controls.Add(flipXBtn);
-            buttons.Controls.Add(flipYBtn);
-            buttons.Controls.Add(twistBtn);
-            buttons.Controls.Add(recenterBtn);
             layout.Controls.Add(buttons);
 
             foreach (var l in new[] { barLine, xboxLine })
@@ -142,7 +138,6 @@ namespace WiiRemoteBridge
             layout.Controls.Add(pcIp);
 
             preview.Seats = () => seats.Select(x => (x.Remote != null, x.Latest)).ToArray();
-            layout.Controls.Add(preview);
 
             logBox.Dock = DockStyle.Fill;
             logBox.Multiline = true;

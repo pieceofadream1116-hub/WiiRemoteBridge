@@ -371,12 +371,11 @@ namespace WiiRemoteBridge
                     }
                     else log("Something is plugged into the remote, but it isn't a Nunchuk. Ignoring it.");
                 }
-                log("No MotionPlus: motion will use tilt only.");
+                log("No MotionPlus in this remote: buttons and swings work, but pointing will be jumpy. A MotionPlus remote points smoothly.");
             }
 
             bool hasExt = HasMotionPlus || HasNunchuk;
-            await SetupCamera(!hasExt).ConfigureAwait(false);
-            mode = (byte)(hasExt ? 0x37 : 0x33); // buttons + tilt + camera (+ MotionPlus or Nunchuk)
+            mode = (byte)(hasExt ? 0x35 : 0x31); // buttons + tilt (+ MotionPlus or Nunchuk); camera stays off
             await SetMode(mode).ConfigureAwait(false);
             if (HasMotionPlus) Calibrate();
             log("Asked the remote for report 0x" + mode.ToString("X2") + ".");
@@ -474,12 +473,8 @@ namespace WiiRemoteBridge
             if (id == 0x33 && r.Length >= 18) ParseCamera(r, 6, true, s.TimestampUs);
             else if (id == 0x37 && r.Length >= 16) ParseCamera(r, 6, false, s.TimestampUs);
 
-            // Pointer for every remote: the sensor bar when it's seen, else wrist twist + tilt.
-            if (hasAccel)
-            {
-                MinusHold(s);
-                TwistPointer(s);
-            }
+            // Plain go-between, like WiimoteHook: buttons, the real tilt and MotionPlus go to Dolphin
+            // untouched, and Dolphin does the pointing itself from MotionPlus.
 
             int extAt = id == 0x32 || id == 0x34 ? 3 : id == 0x35 ? 6 : id == 0x36 ? 13 : id == 0x37 ? 16 : -1;
             if (extAt > 0 && r.Length >= extAt + 6)

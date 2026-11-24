@@ -61,19 +61,9 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
 - Up to 4 remotes at once: each remote synced to the bar becomes its own player
   (first = DSU pad 0 = player 1, second = pad 1 = player 2, ...), with its player light lit.
 - Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
-- Remotes without MotionPlus aim by **wrist twist** (left/right) and **tilt** (up/down). The aim is
-  sent as an absolute position on the DSU right stick, which the Dolphin "WiimoteHook" profile maps
-  to the IR (Point) group, so it can't drift. The accelerometer and MotionPlus go to Dolphin unchanged (swings, golf power bars, steering);
-  the profile turns Dolphin's own motion pointing (IMUIR) off so only the stick aims. Adaptive smoothing plus a
-  small hold-still zone keep it steady. Hold **minus** ~0.6 s (or click "Set centre") to make the
-  current aim the middle; a quick tap still presses minus. "Flip left/right" / "Flip up/down" and
-  "Twist aiming" on/off are remembered in `WiiRemoteBridge-settings.txt`. A small test screen shows
-  each player's pointer.
-- **Sensor bar aiming** for every remote (with or without MotionPlus): the remote's IR camera is switched on
-  (report 0x33, or 0x37 with a Nunchuk) and the bar's two light dots give a steady absolute aim,
-  with the wrist's twist taken out. When the bar isn't seen it glides over to twist aiming, and
-  back. The flip buttons apply to whichever aiming is in use. One Euro smoothing keeps both steady
-  when still without lag when moving.
+- A plain go-between, like WiimoteHook: buttons, the real accelerometer and MotionPlus go to
+  Dolphin untouched, and Dolphin points from MotionPlus (IMU pointing in the profile). Remotes
+  without MotionPlus still work for buttons and swings; their pointing is tilt-only.
 - Each player's data only goes to the Dolphin connection that asked for that player (Dolphin
   opens one per controller), so two remotes never get mixed together.
 - Laid out like WiimoteHook's DS4 output: A = Cross, B = R1, 1 = Square, 2 = Circle,
