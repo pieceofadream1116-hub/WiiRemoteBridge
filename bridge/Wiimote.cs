@@ -363,9 +363,9 @@ namespace WiiRemoteBridge
                 log("No MotionPlus: motion will use tilt only.");
             }
 
-            bool ext = HasMotionPlus || HasNunchuk;
-            await SetupCamera(!ext).ConfigureAwait(false);
-            mode = (byte)(ext ? 0x37 : 0x33); // buttons + tilt + camera (+ MotionPlus or Nunchuk)
+            bool hasExt = HasMotionPlus || HasNunchuk;
+            await SetupCamera(!hasExt).ConfigureAwait(false);
+            mode = (byte)(hasExt ? 0x37 : 0x33); // buttons + tilt + camera (+ MotionPlus or Nunchuk)
             await SetMode(mode).ConfigureAwait(false);
             if (HasMotionPlus) Calibrate();
             log("Asked the remote for report 0x" + mode.ToString("X2") + ".");
