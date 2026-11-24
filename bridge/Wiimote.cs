@@ -196,6 +196,7 @@ namespace WiiRemoteBridge
                 if ((DateTime.Now - lastIdLog).TotalSeconds >= 5)
                 {
                     LogIds();
+                    LogCamera();
                     if (setupDone && resetting == 0 && (DateTime.Now - lastModeReport).TotalSeconds > 3 && (DateTime.Now - lastOtherReport).TotalSeconds < 5)
                     {
                         log("The remote isn't sending tilt data. It was probably reset. Setting it up again.");
@@ -218,6 +219,16 @@ namespace WiiRemoteBridge
             if (text == lastIdText) return;
             lastIdText = text;
             log("Remote is sending: " + (text.Length == 0 ? "nothing" : text) + ". Asked for 0x" + mode.ToString("X2") + ".");
+        }
+
+        string lastCamText = "";
+        void LogCamera()
+        {
+            string t = dotCount == 0 ? "camera sees no light dots" : "camera sees " + dotCount + " dot(s):";
+            for (int i = 0; i < dotCount; i++) t += " (" + dotX[i] / 100 * 100 + "," + dotY[i] / 100 * 100 + ")";
+            if (t == lastCamText) return;
+            lastCamText = t;
+            log(t);
         }
 
         // The remote was reset (battery out, re-synced, turned off and on): set it up from scratch.
@@ -521,7 +532,7 @@ namespace WiiRemoteBridge
                     int o = at + i * 3;
                     byte b0 = r[o], b1 = r[o + 1], b2 = r[o + 2];
                     int x = b0 | (((b2 >> 4) & 3) << 8), y = b1 | (((b2 >> 6) & 3) << 8);
-                    if (x >= 1023 || y >= 1023) continue;
+                    if (x >= 1023 || y >= 1023 || (x == 0 && y == 0)) continue; // empty, or camera not really on
                     dotX[n] = x; dotY[n] = y; n++;
                 }
             }
@@ -533,8 +544,8 @@ namespace WiiRemoteBridge
                     byte b0 = r[o], b1 = r[o + 1], b2 = r[o + 2], b3 = r[o + 3], b4 = r[o + 4];
                     int x1 = b0 | (((b2 >> 4) & 3) << 8), y1 = b1 | (((b2 >> 6) & 3) << 8);
                     int x2 = b3 | ((b2 & 3) << 8), y2 = b4 | (((b2 >> 2) & 3) << 8);
-                    if (x1 < 1023 && y1 < 1023) { dotX[n] = x1; dotY[n] = y1; n++; }
-                    if (x2 < 1023 && y2 < 1023) { dotX[n] = x2; dotY[n] = y2; n++; }
+                    if (x1 < 1023 && y1 < 1023 && (x1 | y1) != 0) { dotX[n] = x1; dotY[n] = y1; n++; }
+                    if (x2 < 1023 && y2 < 1023 && (x2 | y2) != 0) { dotX[n] = x2; dotY[n] = y2; n++; }
                 }
             }
             dotCount = n;
@@ -556,6 +567,8 @@ namespace WiiRemoteBridge
                         double d = Math.Pow(dotX[i] - dotX[j], 2) + Math.Pow(dotY[i] - dotY[j], 2);
                         if (d > best) { best = d; a = i; b = j; }
                     }
+                // A real bar's two ends are a sensible distance apart; anything else isn't the bar.
+                if (best < 15 * 15 || best > 900 * 900) return HoldOrNot(nowUs, out px, out py);
                 if (dotX[a] > dotX[b]) (a, b) = (b, a);
                 midX = (dotX[a] + dotX[b]) / 2.0;
                 midY = (dotY[a] + dotY[b]) / 2.0;
@@ -570,11 +583,7 @@ namespace WiiRemoteBridge
                 midX = first ? m1x : m2x;
                 midY = first ? m1y : m2y;
             }
-            else if (nowUs - lastBarUs < BarHoldUs)
-            {
-                px = lastBarX; py = lastBarY; return true; // brief blink: hold where it was
-            }
-            else return false;
+            else return HoldOrNot(nowUs, out px, out py);
 
             lastMidX = midX; lastMidY = midY;
 
@@ -591,6 +600,13 @@ namespace WiiRemoteBridge
             py = Math.Clamp(rawY - barZeroY, -1, 1) * (Settings.IrFlipUpDown ? -1 : 1);
             lastBarX = px; lastBarY = py; lastBarUs = nowUs;
             return true;
+        }
+
+        // Brief blink: hold where it was for a moment; after that, the bar isn't seen.
+        bool HoldOrNot(long nowUs, out float px, out float py)
+        {
+            px = lastBarX; py = lastBarY;
+            return nowUs - lastBarUs < BarHoldUs;
         }
 
         void TwistPointer(WiiState s)
@@ -614,7 +630,12 @@ namespace WiiRemoteBridge
             if (Math.Abs(tiltSmooth - tiltHeld) > HoldStill) tiltHeld += Math.Sign(tiltSmooth - tiltHeld) * (Math.Abs(tiltSmooth - tiltHeld) - HoldStill);
 
             // Sensor bar aiming, when the camera can see the bar.
-            bool bar = BarPointer(s.TimestampUs, out float bx, out float by, out float rawBx, out float rawBy);
+            bool seen = BarPointer(s.TimestampUs, out float bx, out float by, out float rawBx, out float rawBy);
+            // Only switch to the bar once it has been seen steadily for a moment, so a flicker
+            // can't keep restarting the glide (which froze the pointer).
+            if (!seen) barSeenSinceUs = -1;
+            else if (barSeenSinceUs < 0) barSeenSinceUs = s.TimestampUs;
+            bool bar = seen && s.TimestampUs - barSeenSinceUs >= 150_000;
 
             if (recenterRequested)
             {
@@ -661,6 +682,7 @@ namespace WiiRemoteBridge
             s.PointerY = y;
         }
         float lastOutX, lastOutY;
+        long barSeenSinceUs = -1;
 
         void MotionPlusData(byte[] r, int at, WiiState s)
         {

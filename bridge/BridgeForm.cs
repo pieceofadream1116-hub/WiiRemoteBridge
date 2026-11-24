@@ -267,6 +267,7 @@ namespace WiiRemoteBridge
             }
             Log("Listening for Dolphin on port " + DsuServer.DefaultPort + ". This PC: " + LocalAddresses());
             Log("If Windows asks about the firewall, click Allow.");
+            if (!Settings.TwistAiming) Log("Note: Twist aiming is OFF, so the pointer only moves when the camera sees the sensor bar. Click \"Twist aiming\" to turn it on.");
             runCts = new CancellationTokenSource();
             startBtn.Text = "STOP";
             startBtn.BackColor = Bad;
