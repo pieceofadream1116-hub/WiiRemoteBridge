@@ -363,12 +363,9 @@ namespace WiiRemoteBridge
                 log("No MotionPlus: motion will use tilt only.");
             }
 
-            if (HasMotionPlus) mode = 0x35;           // buttons + tilt + MotionPlus
-            else
-            {
-                await SetupCamera(!HasNunchuk).ConfigureAwait(false);
-                mode = (byte)(HasNunchuk ? 0x37 : 0x33); // buttons + tilt + camera (+ Nunchuk)
-            }
+            bool ext = HasMotionPlus || HasNunchuk;
+            await SetupCamera(!ext).ConfigureAwait(false);
+            mode = (byte)(ext ? 0x37 : 0x33); // buttons + tilt + camera (+ MotionPlus or Nunchuk)
             await SetMode(mode).ConfigureAwait(false);
             if (HasMotionPlus) Calibrate();
             log("Asked the remote for report 0x" + mode.ToString("X2") + ".");
@@ -466,7 +463,8 @@ namespace WiiRemoteBridge
             if (id == 0x33 && r.Length >= 18) ParseCamera(r, 6, true, s.TimestampUs);
             else if (id == 0x37 && r.Length >= 16) ParseCamera(r, 6, false, s.TimestampUs);
 
-            if (hasAccel && !HasMotionPlus && Settings.TwistAiming)
+            // Pointer for every remote: the sensor bar when it's seen, else wrist twist + tilt.
+            if (hasAccel)
             {
                 MinusHold(s);
                 TwistPointer(s);
@@ -636,8 +634,12 @@ namespace WiiRemoteBridge
             else
             {
                 barXFilter.Reset(); barYFilter.Reset();
-                x = Math.Clamp((twistHeld - twistZero) / TwistRange, -1, 1) * (Settings.FlipLeftRight ? -1 : 1);
-                y = Math.Clamp((tiltHeld - tiltZero) / TiltRange, -1, 1) * (Settings.FlipUpDown ? -1 : 1);
+                if (Settings.TwistAiming)
+                {
+                    x = Math.Clamp((twistHeld - twistZero) / TwistRange, -1, 1) * (Settings.FlipLeftRight ? -1 : 1);
+                    y = Math.Clamp((tiltHeld - tiltZero) / TiltRange, -1, 1) * (Settings.FlipUpDown ? -1 : 1);
+                }
+                else x = y = 0;
             }
 
             // Glide (0.15 s) instead of jumping when switching between bar and twist aiming.
@@ -647,18 +649,9 @@ namespace WiiRemoteBridge
             y = blendFromY + (y - blendFromY) * k;
             lastOutX = x; lastOutY = y;
 
-            // What Dolphin gets as the tilt sensor: the real sideways twist, no up/down tilt (the stick
-            // does that), plus any quick swing or shake so games still feel those.
-            gx += (s.Ax - gx) * 0.08f; gy += (s.Ay - gy) * 0.08f; gz += (s.Az - gz) * 0.08f;
-            float dx = s.Ax - gx, dy = s.Ay - gy, dz = s.Az - gz;
-            bool swinging = Math.Sqrt(dx * dx + dy * dy + dz * dz) > SwingThreshold;
-            double roll = Math.Atan2(gx, gz);
-            s.Ax = (float)Math.Sin(roll) + (swinging ? dx : 0);
-            s.Ay = swinging ? dy : 0;
-            s.Az = (float)Math.Cos(roll) + (swinging ? dz : 0);
-
-            s.HasGyro = false;  // no turning data: the stick does the aiming
-            s.Pitch = s.Roll = s.Yaw = 0;
+            // The tilt sensor (and MotionPlus) go to the game exactly as the remote reports them,
+            // so swings, power bars and steering all work. Dolphin's own motion pointing is off in
+            // the profile; the pointer comes only from the stick.
             s.TwistMode = true;
             s.BarAiming = bar;
             s.BarDots = s.TimestampUs - dotsUs < 100_000 ? dotCount : 0;

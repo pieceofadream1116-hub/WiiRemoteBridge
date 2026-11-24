@@ -63,13 +63,13 @@ Xbox in Dev Mode) can use it under *Alternate Input Sources > DSU*.
 - Buttons, accelerometer, MotionPlus (auto-calibrated) and Nunchuk.
 - Remotes without MotionPlus aim by **wrist twist** (left/right) and **tilt** (up/down). The aim is
   sent as an absolute position on the DSU right stick, which the Dolphin "WiimoteHook" profile maps
-  to the IR (Point) group, so it can't drift. The tilt sensor Dolphin gets keeps the real sideways
-  twist and quick swings, without the up/down tilt (the stick does that). Adaptive smoothing plus a
+  to the IR (Point) group, so it can't drift. The accelerometer and MotionPlus go to Dolphin unchanged (swings, golf power bars, steering);
+  the profile turns Dolphin's own motion pointing (IMUIR) off so only the stick aims. Adaptive smoothing plus a
   small hold-still zone keep it steady. Hold **minus** ~0.6 s (or click "Set centre") to make the
   current aim the middle; a quick tap still presses minus. "Flip left/right" / "Flip up/down" and
   "Twist aiming" on/off are remembered in `WiiRemoteBridge-settings.txt`. A small test screen shows
   each player's pointer.
-- **Sensor bar aiming** for remotes without MotionPlus: the remote's IR camera is switched on
+- **Sensor bar aiming** for every remote (with or without MotionPlus): the remote's IR camera is switched on
   (report 0x33, or 0x37 with a Nunchuk) and the bar's two light dots give a steady absolute aim,
   with the wrist's twist taken out. When the bar isn't seen it glides over to twist aiming, and
   back. The flip buttons apply to whichever aiming is in use. One Euro smoothing keeps both steady
